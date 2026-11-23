@@ -1,0 +1,7 @@
+customtkinter>=5.2
+opencv-python
+numpy
+pillow
+requests
+psutil
+pytesseract
