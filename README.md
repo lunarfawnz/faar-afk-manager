@@ -61,8 +61,7 @@ or the cookie stops working.
 
 > [!CAUTION]
 > The cookie **is** your login. It's saved in `data/accounts.json`, encrypted with Windows DPAPI so it
-> only works for your Windows user, and it's only ever sent to roblox.com. Never share it, and never
-> commit the `data/` folder (it's in `.gitignore`).
+> only works for your Windows user, and it's only ever sent to roblox.com. Never share it.
 
 ### Launch and start
 
