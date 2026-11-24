@@ -165,6 +165,19 @@ While your script is inside `with my_turn():` the app waits, and the other way r
 short (one action or one shop visit). If your main is added in the app, turn its **Tile** switch off so
 it's never moved.
 
+## Updating
+
+The app checks GitHub for a newer release each time it opens (turn this off in **Settings → General →
+Check for updates on launch**). If there's one, an **Update** button appears in the sidebar — it only
+updates when you click it.
+
+- **Running the .exe:** it downloads the new `FAAR Manager.exe`, closes, swaps itself in, and reopens.
+  The old one is kept as `FAAR Manager.old.exe` as a backup.
+- **Running from source:** a `git clone` does a `git pull`; a plain download pulls the latest files.
+  Restart to apply.
+
+Your `data/` folder (accounts, settings, logs) is never touched by an update.
+
 ## Troubleshooting
 
 | Problem | Fix |

@@ -16,7 +16,8 @@ from . import win, roblox
 from .engine import Engine
 from .storage import (load_accounts, save_accounts, load_settings, save_settings, Account,
                       DATA_DIR, protect)
-from . import builtin, hallows, optimize
+from . import builtin, hallows, optimize, update
+from .version import __version__
 
 BG = "#0e1016"
 PANEL = "#151823"
@@ -120,6 +121,8 @@ class App(ctk.CTk):
         self.after(100, self._pump)
         self.after(1000, self._tick)
         self.after(120, self._prebuild_pages)
+        if self.settings.get("check_updates", True):
+            self.after(1500, lambda: threading.Thread(target=self._check_updates, daemon=True).start())
         # Slow one-time work, after the window is on screen
         if win.IS_WIN:
             threading.Thread(target=self.apply_graphics, kwargs={"quiet": True}, daemon=True).start()
@@ -145,6 +148,58 @@ class App(ctk.CTk):
         if "log" in self.pages:
             self.pages["log"].drain()
         self.after(100, self._pump)
+
+    def _check_updates(self):
+        info = update.check()
+        if info and info.get("newer"):
+            self._update_info = info
+            self.ui(lambda: self._show_update_button(info["version"]))
+
+    def _show_update_button(self, version):
+        self.update_btn.configure(text=f"\u2b06  Update to v{version}")
+        self.update_btn.grid()
+
+    def _do_update(self):
+        info = self._update_info
+        if not info:
+            return
+        notes = (info.get("notes") or "").strip()
+        if len(notes) > 500:
+            notes = notes[:500] + "\u2026"
+        msg = f"Update to v{info['version']}?\n\n{notes}" if notes else f"Update to v{info['version']}?"
+        if update.is_frozen():
+            msg += "\n\nThe app will close, swap in the new version, and reopen."
+        else:
+            msg += "\n\nThe app's files will be updated; restart to apply."
+        if not messagebox.askyesno("Update available", msg):
+            return
+        self.update_btn.configure(text="Updating\u2026", state="disabled")
+        threading.Thread(target=self._run_update, args=(info,), daemon=True).start()
+
+    def _run_update(self, info):
+        try:
+            if update.is_frozen():
+                update.update_exe(info)
+                self.ui(lambda: self._update_done_exe())
+            else:
+                result = update.update_source()
+                self.ui(lambda: self._update_done_source(result))
+        except Exception as e:
+            self.log(f"Update failed: {e}", level="error")
+            self.ui(lambda: (messagebox.showerror("Update failed", str(e)),
+                             self.update_btn.configure(text="\u2b06  Try update again", state="normal")))
+
+    def _update_done_exe(self):
+        messagebox.showinfo("Updating", "Downloaded. The app will now close and reopen on the new version.")
+        self._on_close()
+        os._exit(0)
+
+    def _update_done_source(self, result):
+        if messagebox.askyesno("Update ready", result + "\n\nRestart now?"):
+            self._on_close()
+            update.restart()
+        else:
+            self.update_btn.grid_remove()
 
     def apply_graphics(self, quiet=False):
         if not win.IS_WIN:
@@ -306,7 +361,14 @@ class App(ctk.CTk):
         self.multi_lbl = ctk.CTkLabel(sb, text="", font=F(12, "bold"), text_color=MUTED, justify="center")
         self.multi_lbl.grid(row=12, column=0, pady=(0, 6))
         ctk.CTkLabel(sb, text="F8 pause / resume   ·   F9 stop", font=F(11), text_color=MUTED).grid(
-            row=13, column=0, pady=(0, 16))
+            row=13, column=0, pady=(0, 2))
+        self.update_btn = pill_button(sb, "", self._do_update, color=GOOD, hover="#2fc283",
+                                      text_color="#0b1a12", width=180)
+        self.update_btn.grid(row=14, column=0, pady=(0, 4))
+        self.update_btn.grid_remove()
+        self._update_info = None
+        ctk.CTkLabel(sb, text=f"v{__version__}", font=F(11), text_color=MUTED).grid(
+            row=15, column=0, pady=(0, 14))
 
     def _start(self):
         if not win.IS_WIN:
@@ -782,6 +844,9 @@ SETTINGS_FORM = [
         ("restore_user_focus", "Give focus back to my window after each action", bool, ""),
         ("wait_for_idle_s", "Wait until mouse/keyboard are idle for (s)", float,
          "Before taking control, waits for this long with no input from you or another script. 0 = off."),
+        ("check_updates", "Check for updates on launch", bool,
+         "Looks for a newer release on GitHub when the app opens; shows an Update button in the sidebar "
+         "if there is one. It only updates when you click it."),
     ]),
 ]
 

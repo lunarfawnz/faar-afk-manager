@@ -158,6 +158,7 @@ DEFAULT_SETTINGS = {
     "anti_afk_min": 14,
     "anti_afk_clicks": 10,
     "restore_user_focus": True,
+    "check_updates": True,
 }
 
 
