@@ -250,14 +250,14 @@ def stock_status(img, x, y, sc):
         return "ok", None
     l, t, r, b = STOCK_BOX
     texts = ocr_texts(img, (x + l * sc, y + t * sc, x + r * sc, y + b * sc), sc)
+    for t in texts:                              # "xN" remaining wins (works in any language)
+        n = _stock_left(t)
+        if n is not None:
+            return ("out", None) if n == 0 else ("left", n)
     if any(_says_out_of_stock(t) for t in texts):
         return "out", None
     if any("owned" in re.sub(r"[^a-z]", "", _clean_ocr(t)) for t in texts):
         return "out", None
-    for t in texts:
-        n = _stock_left(t)
-        if n is not None:
-            return ("out", None) if n == 0 else ("left", n)
     return "ok", None
 
 
@@ -265,12 +265,34 @@ _OCR = {"ready": None}
 
 
 def _find_tesseract():
-    cands = [r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    cands = [os.path.join(base, "tesseract", "tesseract.exe"),
+             r"C:\Program Files\Tesseract-OCR\tesseract.exe",
              r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
              os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe"),
              os.path.expandvars(r"%LOCALAPPDATA%\Tesseract-OCR\tesseract.exe"),
              shutil.which("tesseract")]
     return next((c for c in cands if c and os.path.exists(c)), None)
+
+
+def _langs(data_dir):
+    """Every language pack in the tessdata folder, English first (so "eng" or "eng+chi_sim+jpn"...).
+    Drop extra <lang>.traineddata files into tessdata and they're used automatically."""
+    if not data_dir:
+        return "eng"
+    import glob
+    stems = []
+    for f in sorted(glob.glob(os.path.join(data_dir, "*.traineddata"))):
+        name = os.path.splitext(os.path.basename(f))[0]
+        if name and name != "osd":
+            stems.append(name)
+    stems = (["eng"] if "eng" in stems else []) + [n for n in stems if n != "eng"]
+    return "+".join(stems) if stems else "eng"
+
+
+def ocr_lang():
+    ocr_ready()
+    return _OCR.get("lang", "eng")
 
 
 def ocr_ready():
@@ -281,11 +303,14 @@ def ocr_ready():
             if not exe:
                 raise RuntimeError("Tesseract not installed")
             pytesseract.pytesseract.tesseract_cmd = exe
-            root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            root = getattr(sys, "_MEIPASS", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            data_dir = None
             for d in (os.path.join(os.path.dirname(exe), "tessdata"), os.path.join(root, "tessdata")):
                 if os.path.exists(os.path.join(d, "eng.traineddata")):
                     os.environ["TESSDATA_PREFIX"] = d
+                    data_dir = d
                     break
+            _OCR["lang"] = _langs(data_dir)
             _OCR["mod"] = pytesseract
             _OCR["ready"] = True
         except Exception as e:
@@ -309,7 +334,7 @@ def ocr_texts(img, box, sc):
     out = []
     for v in variants:
         try:
-            out.append(tess.image_to_string(v, config="--psm 6").lower())
+            out.append(tess.image_to_string(v, config="--psm 6", lang=_OCR.get("lang", "eng")).lower())
         except Exception:
             pass
     return out
@@ -331,6 +356,11 @@ def _fuzzy_in(letters, word, cutoff=0.78):
     return False
 
 
+# "sold out" in a few languages (so it works for clanmates whose game isn't English)
+_SOLD_OUT_WORDS = ("outofstock", "soldout", "nostock", "agotado", "esgotado",
+                   "epuise", "epuise", "ausverkauft", "esaurito", "nonstock")
+
+
 def _says_out_of_stock(text):
     letters = re.sub(r"[^a-z]", "", _clean_ocr(text))
     for i in range(len(letters) - 1):
@@ -338,7 +368,7 @@ def _says_out_of_stock(text):
             for j in (i + 2, i + 3):
                 if difflib.SequenceMatcher(None, letters[j:j + 5], "stock").ratio() >= 0.8:
                     return True
-    for w in ("outofstock", "soldout"):
+    for w in _SOLD_OUT_WORDS:
         if w in letters:
             return True
         L = len(w)
@@ -349,8 +379,15 @@ def _says_out_of_stock(text):
 
 
 def _stock_left(text):
-    t = text.lower()
-    for pat in (r"st[o0]ck\s*[:x]?\s*(\d{1,3})", r"(\d{1,3})\s*(?:left|in\s*st[o0]ck)", r"x\s*(\d{1,3})\s*st[o0]ck"):
+    """How many are left, from the "xN" tag the shop shows next to an in-stock item
+    ("x2 Left!", "x1 restantes!"...). The number comes right after the x, in every language.
+    The catch-message spam is the other way round ("Got 2x Rainbow", "1x Secret"), so an x that
+    has a digit in front of it is ignored."""
+    t = text.lower().replace(" ", "")
+    m = re.search(r"(?<![0-9])x([0-9]{1,3})(?![0-9])", t)
+    if m:
+        return int(m.group(1))
+    for pat in (r"st[o0]ck[:x]?([0-9]{1,3})", r"([0-9]{1,3})(?:left|inst[o0]ck)"):
         m = re.search(pat, t)
         if m:
             return int(m.group(1))
@@ -974,7 +1011,7 @@ def disconnected(img):
     tess = _OCR["mod"]
     for v in (gray, 255 - gray):
         try:
-            text = tess.image_to_string(v, config="--psm 6").lower()
+            text = tess.image_to_string(v, config="--psm 6", lang=_OCR.get("lang", "eng")).lower()
         except Exception:
             continue
         flat = re.sub(r"\s+", " ", text)

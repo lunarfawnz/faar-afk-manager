@@ -65,7 +65,7 @@ def _ocr(img, config):
     if not builtin.ocr_ready():
         return ""
     try:
-        return builtin._OCR["mod"].image_to_string(img, config=config).lower()
+        return builtin._OCR["mod"].image_to_string(img, config=config, lang=builtin.ocr_lang()).lower()
     except Exception:
         return ""
 
@@ -234,7 +234,8 @@ def world_label_has(img, word):
     toks = []
     for v in variants:
         try:
-            d = tess.image_to_data(v, config="--psm 11", output_type=tess.Output.DICT)
+            d = tess.image_to_data(v, config="--psm 11", lang=builtin.ocr_lang(),
+                                   output_type=tess.Output.DICT)
         except Exception:
             continue
         for i, txt in enumerate(d["text"]):

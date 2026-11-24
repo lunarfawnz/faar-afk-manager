@@ -37,7 +37,8 @@ Hallow's Eve event, Anti-AFK and rejoining after a server shutdown.
 - Windows 10 or 11
 - [Python 3.10+](https://www.python.org/downloads/) (tick **"Add python.exe to PATH"** while installing)
 - [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki) for reading on-screen text (stock
-  labels, the event banner, the Disconnected box). The English language data is included in `tessdata/`.
+  labels, the event banner, the Disconnected box) when running from source. The release `.exe` already
+  has it inside, so people using that don't need to install anything.
 
 ## Getting started
 
@@ -51,6 +52,25 @@ Hallow's Eve event, Anti-AFK and rejoining after a server shutdown.
 The sidebar shows **● Multi-instance on** in green once it's working. If it's red, close every
 Roblox window and it turns green by itself.
 
+### Building an .exe (optional)
+
+1. Install [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki) on the PC you build on
+   (or run `winget install UB-Mannheim.TesseractOCR`). Only the builder needs it.
+2. Double-click **`build_exe.bat`**. It installs [PyInstaller](https://pyinstaller.org/), packs Python,
+   every library, Tesseract and the icon into one file, and builds `dist\FAAR Manager.exe`.
+
+Upload that one file as a GitHub release. The people downloading it need nothing else.
+
+The exe keeps its `data` folder (accounts, settings, logs) next to itself, so put it in its own
+folder rather than on the desktop. Your current `data` is copied to `dist\data` so it carries over;
+never upload that folder.
+
+It takes a few extra seconds to open, because a one-file exe unpacks itself first. Unsigned
+PyInstaller builds that send key presses sometimes get flagged by antivirus as a false positive; if
+Windows SmartScreen warns, choose **More info → Run anyway**.
+
+Tesseract is licensed under Apache 2.0, which allows bundling it; its license is packed in too.
+
 ## Usage
 
 ### Add accounts
@@ -61,7 +81,8 @@ or the cookie stops working.
 
 > [!CAUTION]
 > The cookie **is** your login. It's saved in `data/accounts.json`, encrypted with Windows DPAPI so it
-> only works for your Windows user, and it's only ever sent to roblox.com. Never share it.
+> only works for your Windows user, and it's only ever sent to roblox.com. Never share it, and never
+> commit the `data/` folder (it's in `.gitignore`).
 
 ### Launch and start
 
@@ -91,6 +112,19 @@ The hotbar must be full: slot 1 is the rod, your characters go from **First char
 **Last character slot**, then potions. While the event is on, the app holds the current character;
 when it shows the Dracula mutation it switches to the next slot, and after the last one it puts it
 away. It reads small text, so it works best on a full-size window.
+
+### Other languages
+
+Stock reading is language-independent. An in-stock item shows its count as **xN** ("x2 Left!",
+"x1 restantes!") and sold-out items show a red label, so the app reads the **xN** number no matter
+the language (and ignores the "2x Rainbow" catch-message spam, which has the x on the other side).
+Common sold-out words are matched in several languages (English, Spanish, and more).
+
+The Hallow's Eve banner is still read as English words. If you need that in another language, drop
+the language's `<lang>.traineddata` into the `tessdata` folder (from
+[tessdata](https://github.com/tesseract-ocr/tessdata) / [tessdata_best](https://github.com/tesseract-ocr/tessdata_best))
+— the app uses every pack it finds there (`eng+...`), and the `.exe` build bundles them. Tell me the
+language and I'll add its event words too.
 
 ### Checking what the app sees
 
@@ -138,7 +172,7 @@ it's never moved.
 | Sidebar says multi-instance is off | Close every Roblox window (check Task Manager for `RobloxPlayerBeta`) |
 | `Not enough cash to rebirth yet` | Normal: the Robux "Skip Rebirth" pop-up was closed, it tries again next time |
 | Account shows **Waiting for you** | The SACRIFICE pop-up (rebirth 250) is open; answer it yourself and it resumes |
-| Stock not read / Hallow's Eve never starts | Tesseract isn't installed or wasn't found |
+| Stock not read / Hallow's Eve never starts | Running from source: Tesseract isn't installed or wasn't found |
 | Low graphics didn't change anything | Restart the Roblox clients; it applies when a client starts |
 | The app closed without a message | Look in `data/crash.log` |
 
@@ -147,6 +181,7 @@ it's never moved.
 ```
 FAAR Manager.pyw          start the app without a console
 run.bat                   installs packages, then starts the app
+build_exe.bat             builds FAAR Manager.exe with PyInstaller
 main.py
 app/
   gui.py                  the window (customtkinter)

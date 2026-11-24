@@ -1,0 +1,138 @@
+{
+  "boost_prompt": {
+    "kind": "image",
+    "ref_w": 960,
+    "ref_h": 599,
+    "variants": [
+      {
+        "file": "boost_prompt.png",
+        "ref_w": 960,
+        "ref_h": 599
+      }
+    ]
+  },
+  "cash_icon": {
+    "kind": "image",
+    "ref_w": 960,
+    "ref_h": 599,
+    "variants": [
+      {
+        "file": "cash_icon.png",
+        "ref_w": 960,
+        "ref_h": 599
+      }
+    ]
+  },
+  "gem_icon": {
+    "kind": "image",
+    "ref_w": 960,
+    "ref_h": 599,
+    "variants": [
+      {
+        "file": "gem_icon.png",
+        "ref_w": 960,
+        "ref_h": 599
+      }
+    ]
+  },
+  "robux_icon": {
+    "kind": "image",
+    "ref_w": 960,
+    "ref_h": 599,
+    "variants": [
+      {
+        "file": "robux_icon.png",
+        "ref_w": 960,
+        "ref_h": 599
+      }
+    ]
+  },
+  "close_x": {
+    "kind": "image",
+    "ref_w": 960,
+    "ref_h": 599,
+    "variants": [
+      {
+        "file": "close_x.png",
+        "ref_w": 960,
+        "ref_h": 599
+      }
+    ]
+  },
+  "robux_prompt_cancel": {
+    "kind": "image",
+    "ref_w": 960,
+    "ref_h": 599,
+    "variants": [
+      {
+        "file": "robux_prompt_cancel.png",
+        "ref_w": 960,
+        "ref_h": 599
+      }
+    ],
+    "threshold": 0.85
+  },
+  "rebirth_open": {
+    "kind": "image",
+    "variants": [
+      {
+        "file": "rebirth_open.png",
+        "ref_w": 960,
+        "ref_h": 599
+      },
+      {
+        "file": "rebirth_open_1793873702853.png",
+        "ref_w": 848,
+        "ref_h": 638
+      }
+    ],
+    "threshold": 0.6
+  },
+  "rebirth_confirm": {
+    "kind": "image",
+    "variants": [
+      {
+        "file": "rebirth_confirm_1793873166452.png",
+        "ref_w": 848,
+        "ref_h": 599
+      }
+    ]
+  },
+  "event_region": {
+    "kind": "region",
+    "rect": [
+      0.30542452830188677,
+      0.005008347245409015,
+      0.39858490566037735,
+      0.1669449081803005
+    ]
+  },
+  "slot_first": {
+    "kind": "region",
+    "rect": [
+      0.32075471698113206,
+      0.9165275459098498,
+      0.045990566037735846,
+      0.07512520868113523
+    ]
+  },
+  "dracula_label": {
+    "kind": "image",
+    "variants": [
+      {
+        "file": "dracula_label_1793873249611.png",
+        "ref_w": 848,
+        "ref_h": 599
+      }
+    ]
+  },
+  "mutation_region": {
+    "kind": "region",
+    "rect": [
+      0.7051886792452831,
+      0.35058430717863104,
+      0.08962264150943396,
+      0.045075125208681135
+    ]
+  }
+}

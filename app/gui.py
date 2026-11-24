@@ -1,5 +1,6 @@
 import io
 import os
+import sys
 import queue
 import threading
 import time
@@ -78,6 +79,7 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Fish an Anime RNG Multi Account Manager")
+        self._set_icon()
         self.geometry("1180x760")
         self.minsize(980, 640)
         self.configure(fg_color=BG)
@@ -94,12 +96,11 @@ class App(ctk.CTk):
         self.engine.relaunch = self.relaunch_blocking
         self._lowered, self._prio_warned, self._next_trim = set(), set(), time.time() + 120
         self._maxed, self._seen, self._maxing = set(), {}, False
-        self.apply_graphics()
 
         self._multi = "off"
         if win.IS_WIN:
             self._multi = win.multi_instance_status()
-        roblox.reattach(self.accounts)
+            roblox.reattach(self.accounts)
 
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -109,16 +110,19 @@ class App(ctk.CTk):
         self.content.grid_columnconfigure(0, weight=1)
         self.content.grid_rowconfigure(0, weight=1)
 
-        self.pages = {
-            "accounts": AccountsPage(self.content, self),
-            "automation": AutomationPage(self.content, self),
-            "log": LogPage(self.content, self),
-        }
+        # Pages are built the first time they're opened, so the window shows up quickly.
+        self._page_makers = {"accounts": AccountsPage, "automation": AutomationPage, "log": LogPage}
+        self.pages = {}
+        self._current = None
         self.show("accounts")
         self._set_engine_status("Stopped")
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(100, self._pump)
         self.after(1000, self._tick)
+        self.after(120, self._prebuild_pages)
+        # Slow one-time work, after the window is on screen
+        if win.IS_WIN:
+            threading.Thread(target=self.apply_graphics, kwargs={"quiet": True}, daemon=True).start()
         if not win.IS_WIN:
             self.log("Not running on Windows: launching and automation are disabled.", level="warn")
         elif self._multi == "on":
@@ -138,7 +142,8 @@ class App(ctk.CTk):
                 self._ui_q.get_nowait()()
         except queue.Empty:
             pass
-        self.pages["log"].drain()
+        if "log" in self.pages:
+            self.pages["log"].drain()
         self.after(100, self._pump)
 
     def apply_graphics(self, quiet=False):
@@ -226,7 +231,8 @@ class App(ctk.CTk):
             self._maxing = False
 
     def _tick(self):
-        self.pages["accounts"].refresh_status()
+        if "accounts" in self.pages:
+            self.pages["accounts"].refresh_status()
         self._maximize_tick()
         self._opt_count = getattr(self, "_opt_count", 0) + 1
         if self._opt_count % 30 == 1:
@@ -316,13 +322,32 @@ class App(ctk.CTk):
         self.status_lbl.configure(text=f"● {st}", text_color=color)
         self.pause_btn.configure(text="Resume" if st == "Paused" else "Pause")
 
+    def _ensure_page(self, key):
+        if key not in self.pages:
+            page = self._page_makers[key](self.content, self)
+            page.grid(row=0, column=0, sticky="nsew")   # all pages share one cell, stacked
+            self.pages[key] = page
+            if self._current and self._current != key and self._current in self.pages:
+                self.pages[self._current].tkraise()     # don't cover the page you're looking at
+        return self.pages[key]
+
+    def _prebuild_pages(self):
+        # Build the pages you haven't opened yet while the app is idle, so the first
+        # time you click them they're already there (no paint-in, no flash).
+        for key in self._page_makers:
+            if key not in self.pages:
+                self._ensure_page(key)
+        if self._current:
+            self.pages[self._current].tkraise()
+
     def show(self, key):
-        for k, p in self.pages.items():
-            p.grid_forget()
+        page = self._ensure_page(key)
+        self._current = key
+        for k in self._page_makers:
             self.nav[k].configure(fg_color=CARD_HI if k == key else "transparent")
-        self.pages[key].grid(row=0, column=0, sticky="nsew")
-        if hasattr(self.pages[key], "on_show"):
-            self.pages[key].on_show()
+        page.tkraise()
+        if hasattr(page, "on_show"):
+            page.on_show()
 
     def save(self):
         save_accounts(self.accounts)
@@ -369,6 +394,20 @@ class App(ctk.CTk):
                         time.sleep(float(self.settings["launch_gap_s"]))
 
         threading.Thread(target=run, daemon=True).start()
+
+    def _set_icon(self):
+        base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        ico = os.path.join(base, "assets", "icon.ico")
+        if not os.path.exists(ico):
+            return
+        try:
+            if win.IS_WIN:
+                import ctypes
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("FAAR.Manager")
+                self.iconbitmap(ico)
+                self.after(250, lambda: self.iconbitmap(ico))
+        except Exception:
+            pass
 
     def relaunch_blocking(self, acc):
         with self._launch_lock:
@@ -550,6 +589,10 @@ class AccountCard(ctk.CTkFrame):
     def refresh(self):
         alive = bool(self.acc.hwnd) and win.is_window(self.acc.hwnd)
         st = self.acc.status if (alive or self.acc.status != "In game") else "Offline"
+        state = (st, alive)
+        if state == getattr(self, "_last_state", None):
+            return
+        self._last_state = state
         self.status.configure(text=f"● {st}", text_color=status_color(st))
         self.launch_btn.configure(text="Close" if alive else "Launch",
                                   fg_color=BAD if alive else ACCENT,
