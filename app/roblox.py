@@ -161,15 +161,7 @@ def launch_uri(ticket, place_id, link_code=None):
     return "+".join(parts)
 
 
-def launch(account, place_id, status=lambda s: None, wait_s=120, link_code=None):
-    if not win.hold_multi_instance_lock() and win.roblox_pids():
-        raise RobloxError("Multi-instance is off because a Roblox window was opened before it could be "
-                          "turned on. Close every Roblox window, wait a few seconds, then launch again.")
-    status("Getting login ticket...")
-    ticket = auth_ticket(account.cookie)
-    before = win.roblox_pids()
-    status("Starting Roblox...")
-    os.startfile(launch_uri(ticket, place_id, link_code))
+def _wait_new_window(account, before, wait_s, status):
     end = time.time() + wait_s
     while time.time() < end:
         time.sleep(1)
@@ -181,7 +173,29 @@ def launch(account, place_id, status=lambda s: None, wait_s=120, link_code=None)
             win.set_title(hwnd, f"Roblox - {account.username}")
             return pid, hwnd
         status(f"Waiting for window... {int(end - time.time())}s")
-    raise RobloxError("Roblox didn't open a window in time.")
+    return None
+
+
+def launch(account, place_id, status=lambda s: None, wait_s=100, link_code=None, tries=2):
+    if not win.hold_multi_instance_lock() and win.roblox_pids():
+        raise RobloxError("Multi-instance is off because a Roblox window was opened before it could be "
+                          "turned on. Close every Roblox window, wait a few seconds, then launch again.")
+    before = win.roblox_pids()
+    for attempt in range(1, tries + 1):
+        status("Getting login ticket...")
+        ticket = auth_ticket(account.cookie)
+        status("Starting Roblox..." if attempt == 1 else "Starting Roblox again...")
+        os.startfile(launch_uri(ticket, place_id, link_code))
+        got = _wait_new_window(account, before, wait_s, status)
+        if got:
+            return got
+        time.sleep(3)
+        wins = win.roblox_windows()
+        late = [pid for pid in wins if pid not in before]
+        if late:
+            win.set_title(wins[late[0]], f"Roblox - {account.username}")
+            return late[0], wins[late[0]]
+    raise RobloxError("Roblox didn't open a window in time (tried twice).")
 
 
 def close(account, wait_s=10):

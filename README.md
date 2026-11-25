@@ -17,8 +17,11 @@ Hallow's Eve event, Anti-AFK and rejoining after a server shutdown.
 - **Cookie sign-in**: each account signs in with its `.ROBLOSECURITY` cookie, stored encrypted to your Windows user
 - **Private servers**: paste a private server link and every account joins it
 - **Auto rebirth** on a timer, including the rebirth 250 SACRIFICE pop-up (pauses and waits for you)
-- **Boost shop**: buys every cash/gem potion at each 5-minute restock, skipping `NO STOCK!` items
-- **Selene shop**: buys everything buyable when she shows up, then visits her on every other account in turn
+- **Boost shop**: buys the cash/gem potions you pick at each 5-minute restock, skipping `NO STOCK!` items
+- **Selene shop**: buys the potions you pick when she shows up, then visits her on every other account in turn
+- **Pick what to buy**: a switch for every Boost and Selene potion, recognised by colour so it works in any
+  game language. Abilities are never bought, and the character Selene sometimes sells is skipped unless you switch it on
+- **Auto ability**: presses your ability key (V by default) whenever the ability button is ready
 - **Hallow's Eve**: holds your character during the event and moves to the next one once it gets the Dracula mutation
 - **Anti-AFK**: a little mouse movement and a few clicks every 14 minutes
 - **Auto-rejoin**: reopens an account after `Disconnected` (error 256, 277...) and closes the Welcome Back pop-up
@@ -80,9 +83,9 @@ where to find it). Use a fresh browser login for each account and don't click **
 or the cookie stops working.
 
 > [!CAUTION]
-> The cookie **is** your login. It's saved in `data/accounts.json`, encrypted with Windows DPAPI so it
-> only works for your Windows user, and it's only ever sent to roblox.com. Never share it, and never
-> commit the `data/` folder (it's in `.gitignore`).
+> The cookie **is** your login. It's saved in `%LOCALAPPDATA%\FAAR Manager\accounts.json`, encrypted with Windows DPAPI so it
+> only works for your Windows user, and it's only ever sent to roblox.com. Never share it. It's kept outside
+> the app folder, so it can't end up in a release or a commit by accident.
 
 ### Launch and start
 
@@ -95,7 +98,7 @@ or the cookie stops working.
 | `F8` | Pause / resume |
 | `F9` | Stop |
 
-Everything the app does shows up in **Activity log** and in `data/log.txt`.
+Everything the app does shows up in **Activity log** and in `%LOCALAPPDATA%\FAAR Manager\log.txt`.
 
 ### Where to stand
 
@@ -126,6 +129,12 @@ the language's `<lang>.traineddata` into the `tessdata` folder (from
 — the app uses every pack it finds there (`eng+...`), and the `.exe` build bundles them. Tell me the
 language and I'll add its event words too.
 
+### Auto ability
+
+Turn **Auto ability** on for an account, then in **Settings → Auto ability** put the mouse over the ability button
+in a Roblox window and click **Mark ability button** (keep the mouse there for 5 seconds). From then on it presses
+the key only when the button is green (ready), and never while a shop or pop-up is open.
+
 ### Checking what the app sees
 
 **⋯ → Test detection** on an account card shows what the app finds in that window right now:
@@ -143,7 +152,9 @@ All settings are on the **Settings** page.
 | Rebirth | How often to try a rebirth |
 | Boost shop | Restock interval, lining up with the clock (:00, :05, :10...), delay after restock |
 | Selene | How often to look for her, cooldown after a visit, how long to check each account in a round |
-| Buying | Max clicks per item (stops early at `OUT OF STOCK` / `NO STOCK!` / `OWNED`) |
+| Boost shop items | A switch per potion: Cash Lvl 1-3, Gems Lvl 1-3, Mutation, Fast Catch, Luck |
+| Selene items | A switch per potion, the character (off by default), and "buy items it doesn't recognise" (off by default) |
+| Auto ability | The ability key, how often to check, "only when ready", and **Mark ability button** |
 | Hallow's Eve | Character slots, the mutation to wait for |
 | Performance | Low graphics, lower priority and memory trim for alts |
 | General | Anti-AFK interval, Disconnected check interval, idle time before acting |
@@ -176,7 +187,8 @@ updates when you click it.
 - **Running from source:** a `git clone` does a `git pull`; a plain download pulls the latest files.
   Restart to apply.
 
-Your `data/` folder (accounts, settings, logs) is never touched by an update.
+Your accounts, settings and logs live in `%LOCALAPPDATA%\FAAR Manager`, outside the app, so updating, moving or
+re-downloading the app never touches them. (Upgrading from 1.1.x copies your old `data` folder there once.)
 
 ## Troubleshooting
 
@@ -187,7 +199,8 @@ Your `data/` folder (accounts, settings, logs) is never touched by an update.
 | Account shows **Waiting for you** | The SACRIFICE pop-up (rebirth 250) is open; answer it yourself and it resumes |
 | Stock not read / Hallow's Eve never starts | Running from source: Tesseract isn't installed or wasn't found |
 | Low graphics didn't change anything | Restart the Roblox clients; it applies when a client starts |
-| The app closed without a message | Look in `data/crash.log` |
+| The app closed without a message | Look in `%LOCALAPPDATA%\FAAR Manager\crash.log` |
+| An item is skipped that you wanted | **⋯ → Test detection** shows what each card was recognised as; check its switch in Settings |
 
 ## Project layout
 
@@ -202,12 +215,16 @@ app/
   builtin.py              on-screen detection (template matching + OCR)
   builtin_templates.py    reference images
   hallows.py              Hallow's Eve detection
+  items.py                which shop item is which (by colour) and the buy switches
+  ability.py              auto ability (is the ability button ready?)
   purchase.py             Robux pop-up detection
   roblox.py               sign-in and launching
   route.py                after-rejoin handling
   optimize.py             performance settings
   storage.py              accounts and settings
   win.py                  Windows input, windows and capture
+  update.py               checks GitHub for a newer release and updates
+  version.py              the version number
 for_other_scripts/
   fish_input_lock.py
 tessdata/eng.traineddata  Tesseract English data

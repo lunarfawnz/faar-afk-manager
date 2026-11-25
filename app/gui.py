@@ -16,7 +16,7 @@ from . import win, roblox
 from .engine import Engine
 from .storage import (load_accounts, save_accounts, load_settings, save_settings, Account,
                       DATA_DIR, protect)
-from . import builtin, hallows, optimize, update
+from . import builtin, hallows, optimize, update, ability, items
 from .version import __version__
 
 BG = "#0e1016"
@@ -41,6 +41,7 @@ FEATURE_LABELS = [
     ("rebirth", "Auto rebirth"),
     ("hallows_eve", "Hallow's Eve"),
     ("anti_afk", "Anti-AFK"),
+    ("ability", "Auto ability"),
     ("rejoin", "Rejoin"),
     ("tile", "Tile"),
 ]
@@ -96,6 +97,7 @@ class App(ctk.CTk):
         self.engine.on_status = lambda st: self.ui(lambda: self._set_engine_status(st))
         self.engine.relaunch = self.relaunch_blocking
         self._lowered, self._prio_warned, self._next_trim = set(), set(), time.time() + 120
+        self._past_taskbar_warned = {}
         self._maxed, self._seen, self._maxing = set(), {}, False
 
         self._multi = "off"
@@ -111,7 +113,6 @@ class App(ctk.CTk):
         self.content.grid_columnconfigure(0, weight=1)
         self.content.grid_rowconfigure(0, weight=1)
 
-        # Pages are built the first time they're opened, so the window shows up quickly.
         self._page_makers = {"accounts": AccountsPage, "automation": AutomationPage, "log": LogPage}
         self.pages = {}
         self._current = None
@@ -123,7 +124,6 @@ class App(ctk.CTk):
         self.after(120, self._prebuild_pages)
         if self.settings.get("check_updates", True):
             self.after(1500, lambda: threading.Thread(target=self._check_updates, daemon=True).start())
-        # Slow one-time work, after the window is on screen
         if win.IS_WIN:
             threading.Thread(target=self.apply_graphics, kwargs={"quiet": True}, daemon=True).start()
         if not win.IS_WIN:
@@ -231,9 +231,10 @@ class App(ctk.CTk):
                 if s.get("opt_low_priority") and tiled:
                     if optimize.set_low_priority(a.pid, True):
                         self._lowered.add(a.pid)
-                    elif a.pid not in self._prio_warned:
-                        self._prio_warned.add(a.pid)
-                        self.log("Couldn't lower this client's priority (Windows refused).", a, "warn")
+                    elif a.user_id not in self._prio_warned:
+                        self._prio_warned.add(a.user_id)
+                        self.log("Couldn't lower this client's priority (Windows refused). Harmless: it only "
+                                 "means this window keeps normal CPU priority.", a, "warn")
                 elif a.pid in self._lowered:
                     optimize.set_low_priority(a.pid, False)
                     self._lowered.discard(a.pid)
@@ -387,15 +388,13 @@ class App(ctk.CTk):
     def _ensure_page(self, key):
         if key not in self.pages:
             page = self._page_makers[key](self.content, self)
-            page.grid(row=0, column=0, sticky="nsew")   # all pages share one cell, stacked
+            page.grid(row=0, column=0, sticky="nsew")
             self.pages[key] = page
             if self._current and self._current != key and self._current in self.pages:
-                self.pages[self._current].tkraise()     # don't cover the page you're looking at
+                self.pages[self._current].tkraise()
         return self.pages[key]
 
     def _prebuild_pages(self):
-        # Build the pages you haven't opened yet while the app is idle, so the first
-        # time you click them they're already there (no paint-in, no flash).
         for key in self._page_makers:
             if key not in self.pages:
                 self._ensure_page(key)
@@ -492,6 +491,15 @@ class App(ctk.CTk):
     def arrange(self):
         if not win.IS_WIN:
             return
+        lock = self.engine.input_lock
+        got = lock.acquire(timeout_s=45)
+        try:
+            self._arrange_now()
+        finally:
+            if got:
+                lock.release()
+
+    def _arrange_now(self):
         running = [a for a in self.accounts if a.hwnd and win.is_window(a.hwnd)
                    and a.features.get("tile", True)]
         hwnds = [a.hwnd for a in running]
@@ -527,8 +535,11 @@ class App(ctk.CTk):
                 win.place_window(h, x, y, cw, ch)
                 vl, vt, vr, vb = win.visible_rect(h)
                 if vb > bottom + 2:
-                    self.log(f"{names.get(h, 'A Roblox window')} still runs past the taskbar. Press F11 in it "
-                             "and click Arrange windows again.", level="warn")
+                    last = self._past_taskbar_warned.get(h, 0.0)
+                    if time.time() - last > 900:
+                        self._past_taskbar_warned[h] = time.time()
+                        self.log(f"{names.get(h, 'A Roblox window')} still runs past the taskbar. Press F11 in it "
+                                 "and click Arrange windows again.", level="warn")
         if self.settings.get("window_w") != cw:
             self.settings["window_w"], self.settings["window_h"] = cw, ch
             save_settings(self.settings)
@@ -623,7 +634,7 @@ class AccountCard(ctk.CTkFrame):
             sw = ctk.CTkSwitch(feats, text=label, variable=v, font=F(12), text_color=TEXT,
                                progress_color=ACCENT, button_color="#ffffff", width=40,
                                command=lambda k=key, v=v: self._toggle(k, v))
-            sw.pack(side="left", padx=(0, 16))
+            sw.pack(side="left", padx=(0, 12))
             self.switches[key] = v
 
         act = ctk.CTkFrame(self, fg_color="transparent")
@@ -803,15 +814,32 @@ SETTINGS_FORM = [
         ("focus_settle_s", "After bringing a window forward, wait up to (s)", float,
          "For the game to draw it again before anything is read or clicked."),
     ]),
-    ("Buying", [
-        ("buy_clicks", "Max clicks per cash/gem item", int,
-         "Stops early when the item says OUT OF STOCK / OWNED. Robux buttons are never clicked."),
+    ("Boost shop items", [
+        *[(items.setting_key("boost", k), name, bool, "") for k, name in items.BOOST_ITEMS],
+    ]),
+    ("Selene items", [
+        *[(items.setting_key("selene", k), name, bool, "") for k, name in items.SELENE_ITEMS],
+        (items.setting_key("selene", "character"), "The character (when Selene sells one)", bool,
+         "It appears in her first slot and pushes Luck Lvl 3 one place right; that's how the app spots it. "
+         "Abilities (the star icon) are never bought."),
+        ("buy_unknown_items", "Buy items it doesn't recognise", bool,
+         "New potions the game adds later. Off: they're skipped and named in the log so you know."),
     ]),
     ("Rebirth", [
         ("rebirth_every_min", "Try rebirth every (min)", float,
          "If you can't afford it, the 'Skip Rebirth' Robux pop-up is closed and it tries again later."),
         ("rebirth_popup_wait_s", "Watch for 'Skip Rebirth' pop-up for (s)", float,
          "Raise this if the pop-up shows up late on your PC."),
+    ]),
+    ("Auto ability", [
+        ("ability_key", "Ability key", str,
+         "The key that fires your ability (V by default). Switch it on per account with 'Auto ability' on the "
+         "Accounts page, so you can run it on some windows and not on others."),
+        ("ability_every_s", "Look / press every (s)", float,
+         "How often each switched-on window is checked. Every check brings that window forward for a moment, so "
+         "don't set it very low with many windows."),
+        ("ability_only_ready", "Press only when the button is ready (green)", bool,
+         "Needs the button marked below. Without a marked button the key is simply pressed on the timer."),
     ]),
     ("Performance", [
         ("opt_low_graphics", "Low graphics for all Roblox clients", bool,
@@ -911,7 +939,92 @@ class AutomationPage(ctk.CTkFrame):
                                  wraplength=380, justify="left").grid(
                         row=r, column=0, columnspan=2, sticky="w", padx=16)
                     r += 1
+            if title == "Auto ability":
+                r = self._ability_controls(card, r)
             ctk.CTkFrame(card, fg_color="transparent", height=10).grid(row=r, column=0)
+
+    def _ability_controls(self, card, r):
+        row = ctk.CTkFrame(card, fg_color="transparent")
+        row.grid(row=r, column=0, columnspan=2, sticky="w", padx=16, pady=(8, 0))
+        pill_button(row, "Mark ability button", self._mark_ability, width=170).pack(side="left", padx=(0, 8))
+        ghost_button(row, "Test", self._test_ability, width=64).pack(side="left")
+        self.ability_lbl = ctk.CTkLabel(card, text="", font=F(11), text_color=MUTED, anchor="w",
+                                        wraplength=380, justify="left")
+        self.ability_lbl.grid(row=r + 1, column=0, columnspan=2, sticky="w", padx=16, pady=(4, 0))
+        self._ability_label()
+        return r + 2
+
+    def _ability_label(self):
+        pos = self.app.settings.get("ability_pos")
+        if ability.valid_pos(pos):
+            self.ability_lbl.configure(text=f"Button marked at {float(pos[0]) * 100:.1f}% across, "
+                                            f"{float(pos[1]) * 100:.1f}% down (works at any window size).")
+        else:
+            self.ability_lbl.configure(text="Button not marked yet. Put the mouse over the ability button in a "
+                                            "Roblox window, then click 'Mark ability button' and keep the mouse "
+                                            "there for 5 seconds.")
+
+    def _window_under_cursor(self):
+        cx, cy = win.cursor_pos()
+        for a in self.app.accounts:
+            if not (a.hwnd and win.is_window(a.hwnd)):
+                continue
+            l, t, w, h = win.client_rect(a.hwnd)
+            if w > 0 and h > 0 and l <= cx < l + w and t <= cy < t + h:
+                return a, (cx - l) / w, (cy - t) / h
+        return None, 0.0, 0.0
+
+    def _mark_ability(self):
+        if not win.IS_WIN:
+            return
+
+        def run():
+            self.app.log("Auto ability: keep the mouse over the ability button in a Roblox window. "
+                         "Reading its position in 5 seconds...")
+            time.sleep(5.0)
+            acc, fx, fy = self._window_under_cursor()
+            if acc is None:
+                self.app.log("Auto ability: the mouse wasn't over a Roblox window. Try again.", level="warn")
+                return
+            self.app.settings["ability_pos"] = [round(fx, 4), round(fy, 4)]
+            save_settings(self.app.settings)
+            self.app.ui(self._ability_label)
+            self.app.log(f"Auto ability: button marked on {acc.username}'s window ({fx * 100:.1f}%, {fy * 100:.1f}%).")
+            self._test_ability_on(acc)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _test_ability(self):
+        if not win.IS_WIN:
+            return
+
+        def run():
+            pos = self.app.settings.get("ability_pos")
+            if not ability.valid_pos(pos):
+                self.app.log("Auto ability: mark the button first.", level="warn")
+                return
+            for a in self.app.accounts:
+                if a.hwnd and win.is_window(a.hwnd):
+                    self._test_ability_on(a)
+                    return
+            self.app.log("Auto ability: no Roblox window is open.", level="warn")
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _test_ability_on(self, acc):
+        try:
+            img = win.capture_window(acc.hwnd)
+            pos = self.app.settings.get("ability_pos")
+            if img is None or not ability.valid_pos(pos):
+                self.app.log("Auto ability: couldn't read the window.", acc, "warn")
+                return
+            frac = ability.ready_fraction(img, pos)
+            state = "READY (green)" if frac >= ability.READY_FRACTION else "not ready (grey / on cooldown)"
+            self.app.log(f"Auto ability test: green share {frac:.2f} -> {state}. Needs {ability.READY_FRACTION:.2f} "
+                         "to count as ready. (A window that's behind others may show an old picture; test with the "
+                         "game in front.)", acc)
+        except Exception as e:
+            self.app.log(f"Auto ability test failed: {e}", acc, "warn")
 
     def _save(self):
         errors = []
@@ -970,11 +1083,21 @@ def test_detection(app, acc):
         boxes.append((side[0] - 25, side[1] - 25, 50, 50, ACCENT, "REBIRTH"))
         found.append("REBIRTH button")
     btns = builtin.find_buy_buttons(img)
-    for kind, bx, by, cx, sc in btns:
+    shop_ids = {}
+    for shop in ("selene", "boost"):
+        ids = items.identify(img, btns, shop)
+        shop_ids[shop] = ids
+    shop = max(shop_ids, key=lambda k: sum(n not in ("unknown", "other") for n, r, f in shop_ids[k]))
+    for (kind, bx, by, cx, sc), (item, rect, _f) in zip(btns, shop_ids[shop]):
         st, n = builtin.stock_status(img, bx, by, sc)
         label = {"out": "OUT", "left": f"{n} left", "ok": "buy"}[st]
+        buy = items.wanted(s, shop, item)
         boxes.append((bx - 12 * sc - 2, by - 12 * sc - 2, 24 * sc + 4, 24 * sc + 4, BAD if st == "out" else GOOD,
                       f"{kind} {label}"))
+        if rect is not None:
+            l, t, r, b = rect
+            boxes.append((l, t, r - l, b - t, GOOD if buy else MUTED,
+                          f"{items.label(shop, item)} - {'will buy' if buy else 'skip'}"))
     if btns:
         found.append(f"{len(btns)} cash/gem button(s)")
     if builtin.sacrifice_popup(img):

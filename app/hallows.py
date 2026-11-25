@@ -1,5 +1,6 @@
 import difflib
 import re
+import time
 
 import cv2
 import numpy as np
@@ -257,3 +258,52 @@ def world_label_has(img, word):
 def mutation_seen(img, n, word="dracula"):
     word = word.lower()
     return slot_label_has(img, n, word) or world_label_has(img, word)
+
+
+def _thumb(img, box):
+    sub = _crop(img, box)
+    if sub is None:
+        return None
+    return cv2.resize(cv2.cvtColor(sub, cv2.COLOR_BGR2GRAY), (64, 20), interpolation=cv2.INTER_AREA).astype(np.int16)
+
+
+def _same(a, b, tol=3.0):
+    return a is not None and b is not None and a.shape == b.shape and float(np.abs(a - b).mean()) < tol
+
+
+def hallows_event_cached(img, cache, max_age=30.0):
+    th = _thumb(img, _top_centre(img, EVENT_BOX))
+    old = cache.get("banner")
+    if old and _same(old[0], th) and time.time() - old[2] < max_age:
+        return old[1]
+    res = hallows_event(img)
+    cache["banner"] = (th, res, time.time())
+    return res
+
+
+def mutation_seen_cached(img, n, word, cache, world_every=3, max_age=30.0):
+    word = word.lower()
+    now = time.time()
+    l, t, _, _ = slot_box(img, n)
+    sc = hud_scale(img)
+    lab_th = _thumb(img, (l - 8 * sc, t - 22 * sc, l + 89 * sc, t))
+    old = cache.get(("label", n))
+    if old and _same(old[0], lab_th) and now - old[2] < max_age:
+        on_label = old[1]
+    else:
+        on_label = slot_label_has(img, n, word)
+        cache[("label", n)] = (lab_th, on_label, now)
+    if on_label:
+        return True
+    cache["mut_n"] = cache.get("mut_n", 0) + 1
+    if cache["mut_n"] % world_every and not cache.get("world_hit"):
+        return None
+    w_th = _thumb(img, _centre(img, MUTATION_BOX))
+    old = cache.get("world")
+    if old and _same(old[0], w_th) and now - old[2] < max_age:
+        hit = old[1]
+    else:
+        hit = world_label_has(img, word)
+        cache["world"] = (w_th, hit, now)
+    cache["world_hit"] = hit
+    return hit

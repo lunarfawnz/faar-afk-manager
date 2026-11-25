@@ -250,10 +250,10 @@ def stock_status(img, x, y, sc):
         return "ok", None
     l, t, r, b = STOCK_BOX
     texts = ocr_texts(img, (x + l * sc, y + t * sc, x + r * sc, y + b * sc), sc)
-    for t in texts:                              # "xN" remaining wins (works in any language)
-        n = _stock_left(t)
-        if n is not None:
-            return ("out", None) if n == 0 else ("left", n)
+    counts = [n for n in (_stock_left(t) for t in texts) if n is not None]
+    if counts:
+        n = min(counts)
+        return ("out", None) if n == 0 else ("left", n)
     if any(_says_out_of_stock(t) for t in texts):
         return "out", None
     if any("owned" in re.sub(r"[^a-z]", "", _clean_ocr(t)) for t in texts):
@@ -276,8 +276,6 @@ def _find_tesseract():
 
 
 def _langs(data_dir):
-    """Every language pack in the tessdata folder, English first (so "eng" or "eng+chi_sim+jpn"...).
-    Drop extra <lang>.traineddata files into tessdata and they're used automatically."""
     if not data_dir:
         return "eng"
     import glob
@@ -356,7 +354,6 @@ def _fuzzy_in(letters, word, cutoff=0.78):
     return False
 
 
-# "sold out" in a few languages (so it works for clanmates whose game isn't English)
 _SOLD_OUT_WORDS = ("outofstock", "soldout", "nostock", "agotado", "esgotado",
                    "epuise", "epuise", "ausverkauft", "esaurito", "nonstock")
 
@@ -379,10 +376,6 @@ def _says_out_of_stock(text):
 
 
 def _stock_left(text):
-    """How many are left, from the "xN" tag the shop shows next to an in-stock item
-    ("x2 Left!", "x1 restantes!"...). The number comes right after the x, in every language.
-    The catch-message spam is the other way round ("Got 2x Rainbow", "1x Secret"), so an x that
-    has a digit in front of it is ignored."""
     t = text.lower().replace(" ", "")
     m = re.search(r"(?<![0-9])x([0-9]{1,3})(?![0-9])", t)
     if m:

@@ -63,16 +63,11 @@ if errorlevel 1 (
   exit /b 1
 )
 
-if exist data (
-  echo.
-  echo Copying your accounts and settings next to the new exe...
-  xcopy /e /i /y data "dist\data" >NUL
-)
 
 echo.
 echo Done: dist\FAAR Manager.exe
 echo Tesseract is inside it, so people only need this one file.
-echo That single file is what you upload as a release. It makes its own "data" folder
-echo next to itself the first time it runs (the copied one above is only for you).
+echo That single file is what you upload as a release. Accounts and settings are kept
+echo in %LOCALAPPDATA%\FAAR Manager, never inside the exe or its folder.
 explorer dist
 pause

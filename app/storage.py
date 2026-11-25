@@ -10,10 +10,38 @@ if getattr(sys, "frozen", False):
     ROOT = os.path.dirname(os.path.abspath(sys.executable))
 else:
     ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(ROOT, "data")
+OLD_DATA_DIR = os.path.join(ROOT, "data")
+
+
+def _data_dir():
+    base = os.environ.get("LOCALAPPDATA") if sys.platform == "win32" else None
+    if not base:
+        return OLD_DATA_DIR
+    return os.path.join(base, "FAAR Manager")
+
+
+DATA_DIR = _data_dir()
 ACCOUNTS_FILE = os.path.join(DATA_DIR, "accounts.json")
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def _migrate_old_data():
+    if DATA_DIR == OLD_DATA_DIR or not os.path.isdir(OLD_DATA_DIR):
+        return
+    if os.path.exists(ACCOUNTS_FILE) or os.path.exists(SETTINGS_FILE):
+        return
+    import shutil
+    for name in os.listdir(OLD_DATA_DIR):
+        src = os.path.join(OLD_DATA_DIR, name)
+        if os.path.isfile(src):
+            try:
+                shutil.copy2(src, os.path.join(DATA_DIR, name))
+            except OSError:
+                pass
+
+
+_migrate_old_data()
 
 _lock = threading.RLock()
 
@@ -64,7 +92,7 @@ else:
         return base64.b64decode(token[4:]).decode()
 
 
-FEATURES = ("rebirth", "boost_shop", "selene", "hallows_eve", "anti_afk", "rejoin")
+FEATURES = ("rebirth", "boost_shop", "selene", "hallows_eve", "anti_afk", "rejoin", "ability")
 
 
 @dataclass
@@ -75,7 +103,8 @@ class Account:
     cookie_enc: str = ""
     features: dict = field(default_factory=lambda: {
         "rebirth": False, "boost_shop": True, "selene": True,
-        "hallows_eve": False, "anti_afk": True, "rejoin": True, "tile": True})
+        "hallows_eve": False, "anti_afk": True, "rejoin": True, "tile": True,
+        "ability": False})
     avatar_url: str = ""
 
     pid: int = 0
@@ -143,7 +172,6 @@ DEFAULT_SETTINGS = {
     "selene_cooldown_min": 10,
     "selene_turn_wait_s": 8,
     "focus_settle_s": 10,
-    "buy_clicks": 10,
 
     "event_check_s": 3,
     "first_slot": 2,
@@ -159,7 +187,16 @@ DEFAULT_SETTINGS = {
     "anti_afk_clicks": 10,
     "restore_user_focus": True,
     "check_updates": True,
+
+    "ability_key": "v",
+    "ability_every_s": 10,
+    "ability_only_ready": True,
+    "ability_pos": None,
 }
+
+
+from . import items as _items
+DEFAULT_SETTINGS.update(_items.default_settings())
 
 
 def load_settings():
@@ -176,5 +213,9 @@ def load_settings():
 
 def save_settings(s):
     with _lock:
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+        tmp = SETTINGS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(s, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, SETTINGS_FILE)

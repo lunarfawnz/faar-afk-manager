@@ -11,8 +11,10 @@ sys.path.insert(0, HERE)
 
 def _crash(exc_text):
     try:
-        os.makedirs(os.path.join(HERE, "data"), exist_ok=True)
-        with open(os.path.join(HERE, "data", "crash.log"), "a", encoding="utf-8") as f:
+        base = os.environ.get("LOCALAPPDATA") if sys.platform == "win32" else None
+        folder = os.path.join(base, "FAAR Manager") if base else os.path.join(HERE, "data")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "crash.log"), "a", encoding="utf-8") as f:
             f.write(exc_text + "\n")
     except Exception:
         pass
@@ -22,7 +24,7 @@ def _crash(exc_text):
         r = tk.Tk()
         r.withdraw()
         messagebox.showerror("FAAR Manager crashed",
-                             exc_text[-1500:] + "\n\n(Saved to data\\crash.log)")
+                             exc_text[-1500:] + "\n\n(Saved to %LOCALAPPDATA%\\FAAR Manager\\crash.log)")
         r.destroy()
     except Exception:
         pass

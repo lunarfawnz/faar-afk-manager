@@ -1,14 +1,3 @@
-"""
-Auto-update.
-
-On launch the app asks GitHub for the latest release and, if it's newer than this build, offers it.
-How it updates depends on how it's running:
-  * as the packaged FAAR Manager.exe  -> downloads the new .exe and swaps it in (a running .exe can't
-    overwrite itself on Windows, so a tiny .bat waits for the app to close, swaps the file, reopens it);
-  * from a git clone                  -> git pull;
-  * from a plain source download       -> downloads the repo zip and writes the new files over the folder.
-The data/ folder (accounts, settings, logs) is never touched.
-"""
 import os
 import re
 import shutil
@@ -32,7 +21,6 @@ def is_frozen():
 
 
 def _app_dir():
-    # Where the app actually lives: next to the .exe when frozen, else the project root.
     if is_frozen():
         return os.path.dirname(os.path.abspath(sys.executable))
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -43,7 +31,6 @@ def has_git():
 
 
 def _nums(tag):
-    """'v1.2.3' / '1.2.3' -> (1, 2, 3) for comparing."""
     parts = re.findall(r"\d+", tag or "")
     return tuple(int(p) for p in parts[:4]) or (0,)
 
@@ -53,8 +40,6 @@ def is_newer(latest, current=__version__):
 
 
 def check():
-    """Ask GitHub for the latest release. Returns a dict, or None if the check failed / nothing newer.
-    {version, notes, exe_url, newer}"""
     try:
         r = requests.get(API_LATEST, timeout=TIMEOUT,
                          headers={"Accept": "application/vnd.github+json"})
@@ -89,10 +74,7 @@ def _download(url, dest, progress=None):
     return os.path.getsize(dest)
 
 
-# ----------------------------------------------------------------- applying
 def update_exe(info, progress=None):
-    """Download the new .exe next to this one, then launch a .bat that swaps it in and restarts.
-    The app must exit right after this returns True (the caller does that)."""
     url = info.get("exe_url")
     if not url:
         raise RuntimeError("That release has no .exe attached.")
@@ -100,11 +82,10 @@ def update_exe(info, progress=None):
     folder = os.path.dirname(exe)
     new_exe = os.path.join(folder, "FAAR Manager.new.exe")
     size = _download(url, new_exe, progress)
-    if size < 1_000_000:                              # a real build is tens of MB; a tiny file = bad download
+    if size < 1_000_000:
         os.remove(new_exe)
         raise RuntimeError("The download looks incomplete. Try again.")
     bat = os.path.join(folder, "_faar_update.bat")
-    # wait for this .exe to close, back up the old one, swap in the new, relaunch, delete self
     script = (
         "@echo off\r\n"
         "setlocal\r\n"
@@ -120,13 +101,11 @@ def update_exe(info, progress=None):
          exe)
     with open(bat, "w") as f:
         f.write(script)
-    subprocess.Popen(["cmd", "/c", bat], creationflags=0x08000000)   # CREATE_NO_WINDOW
+    subprocess.Popen(["cmd", "/c", bat], creationflags=0x08000000)
     return True
 
 
 def update_source(progress=None):
-    """Update a source checkout: git pull if it's a clone, else download+extract the repo zip.
-    Returns a short message. The app should restart afterwards to load the new code."""
     folder = _app_dir()
     if has_git():
         out = subprocess.run(["git", "-C", folder, "pull", "--ff-only"],
@@ -134,18 +113,17 @@ def update_source(progress=None):
         if out.returncode != 0:
             raise RuntimeError("git pull failed: " + (out.stderr.strip() or out.stdout.strip())[:200])
         return "Pulled the latest code. Restart to apply."
-    # plain download: fetch the repo zip and copy its files over the folder (keeping data/)
     tmp_zip = os.path.join(folder, "_faar_update.zip")
     _download(ZIPBALL, tmp_zip, progress)
     with zipfile.ZipFile(tmp_zip) as z:
-        root = z.namelist()[0].split("/")[0]         # github wraps everything in one top folder
+        root = z.namelist()[0].split("/")[0]
         extract_to = os.path.join(folder, "_faar_update_tmp")
         shutil.rmtree(extract_to, ignore_errors=True)
         z.extractall(extract_to)
     src = os.path.join(extract_to, root)
     for name in os.listdir(src):
         if name == "data":
-            continue                                 # never overwrite accounts/settings/logs
+            continue
         s, d = os.path.join(src, name), os.path.join(folder, name)
         if os.path.isdir(s):
             shutil.copytree(s, d, dirs_exist_ok=True)
@@ -157,7 +135,6 @@ def update_source(progress=None):
 
 
 def restart():
-    """Relaunch the app (used after a source update)."""
     if is_frozen():
         subprocess.Popen([sys.executable])
     else:
