@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0e1016">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="FAAR">
+<title>FAAR Manager</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="icon" href="/icon-192.png">
+<style>
+:root {
+  --bg: #0e1016; --panel: #151823; --card: #1c2030; --card-hi: #232840; --border: #2a3048;
+  --accent: #7c5cff; --accent-hi: #9479ff; --text: #e8eaf2; --muted: #8a90a6;
+  --good: #3ddc97; --warn: #ffb84d; --bad: #ff5c6c;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+body { padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom); min-height: 100vh; }
+.wrap { max-width: 640px; margin: 0 auto; padding: 16px 16px 96px; }
+h1 { font-size: 22px; margin: 4px 0 2px; }
+h2 { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 22px 4px 8px; }
+.sub { color: var(--muted); font-size: 13px; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 14px; margin-bottom: 10px; }
+.row { display: flex; align-items: center; gap: 10px; }
+.grow { flex: 1; min-width: 0; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.on { background: var(--good); } .dot.wait { background: var(--warn); } .dot.bad { background: var(--bad); }
+button { font: inherit; border: 0; border-radius: 11px; padding: 10px 14px; color: var(--text);
+  background: var(--card-hi); cursor: pointer; min-height: 40px; }
+button:active { transform: scale(.97); }
+button.primary { background: var(--accent); color: #fff; font-weight: 600; }
+button.good { background: var(--good); color: #0b1a12; font-weight: 600; }
+button.bad { background: var(--bad); color: #fff; font-weight: 600; }
+button:disabled { opacity: .45; }
+.btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.btns button { flex: 1; min-width: 80px; }
+.name { font-weight: 600; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.status { color: var(--muted); font-size: 13px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.chip { font-size: 12.5px; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--border);
+  background: transparent; color: var(--muted); min-height: 0; }
+.chip.on { background: rgba(124,92,255,.18); border-color: var(--accent); color: var(--text); }
+.hall { margin-top: 10px; font-size: 13px; color: var(--muted); }
+.hall b { color: var(--text); }
+.shot { margin-top: 10px; width: 100%; border-radius: 10px; display: none; border: 1px solid var(--border); }
+.engine { display: flex; align-items: center; gap: 10px; }
+.engine .state { font-size: 18px; font-weight: 700; }
+.log { font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; max-height: 340px;
+  overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+.log .warn { color: var(--warn); } .log .error { color: var(--bad); }
+.toggle { display: flex; align-items: center; justify-content: space-between; padding: 10px 0;
+  border-bottom: 1px solid var(--border); }
+.toggle:last-child { border-bottom: 0; }
+.sw { width: 46px; height: 28px; border-radius: 999px; background: var(--card-hi); position: relative; flex: none;
+  border: 1px solid var(--border); padding: 0; min-height: 0; }
+.sw::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%;
+  background: var(--muted); transition: left .15s; }
+.sw.on { background: var(--accent); border-color: var(--accent); }
+.sw.on::after { left: 21px; background: #fff; }
+.hint { font-size: 13px; color: var(--muted); margin-top: 8px; }
+input { font: inherit; font-size: 22px; letter-spacing: .3em; text-align: center; width: 100%;
+  padding: 12px; border-radius: 12px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+#login { max-width: 360px; margin: 18vh auto 0; text-align: center; }
+#login .card { padding: 22px; }
+#toast { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom)); transform: translateX(-50%);
+  background: var(--card-hi); border: 1px solid var(--border); padding: 10px 16px; border-radius: 12px;
+  font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90vw; }
+#toast.show { opacity: 1; }
+.err { color: var(--bad); font-size: 14px; min-height: 20px; margin-top: 10px; }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div id="login" class="hidden">
+  <div style="font-size:42px">🎣</div>
+  <h1>FAAR Manager</h1>
+  <div class="sub" style="margin-bottom:18px">Enter the PIN you set on your PC.</div>
+  <div class="card">
+    <input id="pin" type="password" inputmode="numeric" autocomplete="current-password" maxlength="32">
+    <button class="primary" id="loginBtn" style="width:100%;margin-top:12px">Sign in</button>
+    <div class="err" id="loginErr"></div>
+  </div>
+</div>
+
+<div id="main" class="wrap hidden">
+  <div class="row">
+    <div class="grow">
+      <h1>FAAR Manager</h1>
+      <div class="sub" id="updated">Connecting…</div>
+    </div>
+    <button id="logout" style="min-height:34px;padding:6px 12px;font-size:13px">Sign out</button>
+  </div>
+
+  <h2>Automation</h2>
+  <div class="card">
+    <div class="engine"><span class="dot" id="engDot"></span><span class="state" id="engState">…</span></div>
+    <div class="btns">
+      <button class="good" data-eng="start">▶ Start</button>
+      <button data-eng="pause" id="pauseBtn">Pause</button>
+      <button class="bad" data-eng="stop">Stop</button>
+    </div>
+  </div>
+
+  <h2>Accounts</h2>
+  <div id="accounts"></div>
+
+  <h2>Notifications</h2>
+  <div class="card" id="notifCard">
+    <div id="pushSetup">
+      <div class="row">
+        <div class="grow"><b id="pushTitle">Notifications on this phone</b>
+          <div class="status" id="pushState"></div></div>
+        <button class="primary" id="pushBtn">Turn on</button>
+      </div>
+      <div class="hint hidden" id="iosHint">On iPhone, notifications only work from the home screen app: tap
+        <b>Share</b> → <b>Add to Home Screen</b>, open FAAR from there, then turn them on.</div>
+    </div>
+    <div id="kinds" style="margin-top:8px"></div>
+    <div class="btns"><button id="testBtn">Send a test notification</button></div>
+  </div>
+
+  <h2>Activity log</h2>
+  <div class="card"><div class="log" id="log"></div></div>
+</div>
+<div id="toast"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+let state = null, logId = 0, timer = null, shots = {};
+
+function toast(msg) {
+  const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove("show"), 2600);
+}
+
+async function api(path, body) {
+  const opt = body === undefined ? { credentials: "same-origin" } :
+    { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json", "X-FAAR": "1" },
+      body: JSON.stringify(body) };
+  const r = await fetch(path, opt);
+  if (r.status === 401 && path !== "/api/login") { showLogin(); throw new Error("login"); }
+  const ct = r.headers.get("content-type") || "";
+  const data = ct.includes("json") ? await r.json() : null;
+  if (!r.ok) throw new Error((data && data.error) || ("HTTP " + r.status));
+  return data;
+}
+
+function showLogin() {
+  $("#main").classList.add("hidden"); $("#login").classList.remove("hidden");
+  clearInterval(timer); timer = null;
+}
+function showMain() {
+  $("#login").classList.add("hidden"); $("#main").classList.remove("hidden");
+  refresh(); if (!timer) timer = setInterval(() => { if (!document.hidden) refresh(); }, 4000);
+}
+
+$("#loginBtn").onclick = async () => {
+  $("#loginErr").textContent = "";
+  try { await api("/api/login", { pin: $("#pin").value }); $("#pin").value = ""; showMain(); }
+  catch (e) { $("#loginErr").textContent = e.message; }
+};
+$("#pin").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#loginBtn").click(); });
+$("#logout").onclick = async () => { try { await api("/api/logout", {}); } catch (_) {} showLogin(); };
+
+document.querySelectorAll("[data-eng]").forEach((b) => b.onclick = async () => {
+  try { const r = await api("/api/engine", { action: b.dataset.eng }); toast(r.msg); setTimeout(refresh, 600); }
+  catch (e) { if (e.message !== "login") toast(e.message); }
+});
+
+function dotClass(a) {
+  if (a.alive) return /waiting for you|stuck|failed/i.test(a.status) ? "bad" : "on";
+  if (a.launching || /rejoin/i.test(a.status)) return "wait";
+  return /failed/i.test(a.status) ? "bad" : "";
+}
+
+function renderAccounts() {
+  const box = $("#accounts");
+  const keep = {};
+  box.querySelectorAll("img.shot").forEach((i) => { if (i.style.display === "block") keep[i.dataset.id] = i.src; });
+  box.innerHTML = state.accounts.map((a) => {
+    const h = a.hallows || {};
+    const main = a.launching ? `<button data-act="cancel" data-id="${a.id}">Cancel</button>` :
+      a.alive ? `<button class="bad" data-act="close" data-id="${a.id}">Close</button>` :
+                `<button class="primary" data-act="launch" data-id="${a.id}">Launch</button>`;
+    return `<div class="card">
+      <div class="row"><span class="dot ${dotClass(a)}"></span>
+        <div class="grow"><div class="name">${esc(a.name)}</div><div class="status">${esc(a.status || "Offline")}</div></div></div>
+      <div class="btns">${main}
+        <button data-act="rejoin" data-id="${a.id}">Rejoin</button>
+        <button data-shot="${a.id}" ${a.alive ? "" : "disabled"}>📷 View</button></div>
+      <div class="chips">${state.features.map(([k, label]) =>
+        `<button class="chip ${a.features[k] ? "on" : ""}" data-feat="${k}" data-id="${a.id}">${esc(label)}</button>`).join("")}</div>
+      ${a.features.hallows_eve ? `<div class="hall">Hallow's Eve: <b>${h.since || 0}</b> events since the last Dracula
+        · ${h.hits || 0} Dracula / ${h.events || 0} events</div>` : ""}
+      <img class="shot" data-id="${a.id}" alt="">
+    </div>`;
+  }).join("") || `<div class="card sub">No accounts added yet.</div>`;
+  for (const [id, src] of Object.entries(keep)) {
+    const i = box.querySelector(`img.shot[data-id="${id}"]`); if (i) { i.src = src; i.style.display = "block"; }
+  }
+  box.querySelectorAll("[data-act]").forEach((b) => b.onclick = async () => {
+    const act = b.dataset.act;
+    if ((act === "close" || act === "rejoin") && !confirm(act === "close" ? "Close this Roblox window?" : "Close and rejoin this account?")) return;
+    try { const r = await api("/api/account", { id: +b.dataset.id, action: act }); toast(r.msg); setTimeout(refresh, 800); }
+    catch (e) { if (e.message !== "login") toast(e.message); }
+  });
+  box.querySelectorAll("[data-feat]").forEach((b) => b.onclick = async () => {
+    const on = !b.classList.contains("on");
+    b.classList.toggle("on", on);
+    try { await api("/api/feature", { id: +b.dataset.id, key: b.dataset.feat, on }); }
+    catch (e) { b.classList.toggle("on", !on); if (e.message !== "login") toast(e.message); }
+  });
+  box.querySelectorAll("[data-shot]").forEach((b) => b.onclick = async () => {
+    const id = b.dataset.shot, img = box.querySelector(`img.shot[data-id="${id}"]`);
+    b.disabled = true; b.textContent = "Loading…";
+    try {
+      const r = await fetch(`/api/shot?id=${id}&t=${Date.now()}`, { credentials: "same-origin" });
+      if (!r.ok) throw new Error((await r.json()).error || "Couldn't get a screenshot.");
+      if (img.src.startsWith("blob:")) URL.revokeObjectURL(img.src);
+      img.src = URL.createObjectURL(await r.blob()); img.style.display = "block";
+    } catch (e) { toast(e.message); }
+    b.disabled = false; b.textContent = "📷 View";
+  });
+}
+
+function renderEngine() {
+  const st = state.engine;
+  $("#engState").textContent = st;
+  $("#engDot").className = "dot " + (st === "Running" ? "on" : st === "Paused" ? "wait" : "");
+  $("#pauseBtn").textContent = st === "Paused" ? "Resume" : "Pause";
+}
+
+function renderKinds() {
+  $("#kinds").innerHTML = Object.entries(state.kinds).map(([k, label]) =>
+    `<div class="toggle"><span>${esc(label)}</span><button class="sw ${state.notify[k] ? "on" : ""}" data-kind="${k}" aria-label="${esc(label)}"></button></div>`).join("");
+  $("#kinds").querySelectorAll("[data-kind]").forEach((b) => b.onclick = async () => {
+    const on = !b.classList.contains("on"); b.classList.toggle("on", on);
+    try { await api("/api/notify", { kind: b.dataset.kind, on }); }
+    catch (e) { b.classList.toggle("on", !on); if (e.message !== "login") toast(e.message); }
+  });
+}
+
+async function refresh() {
+  try {
+    state = await api("/api/state");
+    renderEngine(); renderAccounts(); renderKinds(); pushStatus();
+    const lg = await api("/api/log?since=" + logId);
+    if (lg.lines.length) {
+      const box = $("#log"), atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+      box.insertAdjacentHTML("beforeend", lg.lines.map((l) => `<div class="${esc(l.level)}">${esc(l.text)}</div>`).join(""));
+      while (box.children.length > 300) box.removeChild(box.firstChild);
+      if (atBottom || !logId) box.scrollTop = box.scrollHeight;
+    }
+    logId = lg.id;
+    $("#updated").textContent = "Updated " + new Date().toLocaleTimeString();
+  } catch (e) {
+    if (e.message !== "login") $("#updated").textContent = "Can't reach your PC (" + e.message + ")";
+  }
+}
+
+const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+const standalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone;
+const pushOK = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+
+function keyBytes(b64) {
+  const s = (b64 + "=".repeat((4 - b64.length % 4) % 4)).replace(/-/g, "+").replace(/_/g, "/");
+  return Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+}
+
+async function currentSub() {
+  if (!pushOK) return null;
+  const reg = await navigator.serviceWorker.getRegistration("/");
+  return reg ? reg.pushManager.getSubscription() : null;
+}
+
+async function pushStatus() {
+  const btn = $("#pushBtn"), st = $("#pushState");
+  $("#iosHint").classList.toggle("hidden", !(isIOS && !standalone));
+  if (!pushOK) { btn.disabled = true; st.textContent = isIOS && !standalone ? "Add to Home Screen first." : "This browser can't do notifications."; return; }
+  const sub = await currentSub();
+  const phones = (state && state.phones.length) || 0;
+  if (sub && Notification.permission === "granted") {
+    btn.textContent = "Turn off"; btn.className = ""; st.textContent = `On · ${phones} device${phones === 1 ? "" : "s"} signed up`;
+  } else {
+    btn.textContent = "Turn on"; btn.className = "primary";
+    st.textContent = Notification.permission === "denied" ? "Blocked. Allow notifications for this app in your phone's settings." : "Off on this phone.";
+  }
+}
+
+$("#pushBtn").onclick = async () => {
+  try {
+    const sub = await currentSub();
+    if (sub && Notification.permission === "granted") {
+      await api("/api/push/unsubscribe", { endpoint: sub.endpoint }); await sub.unsubscribe(); toast("Notifications off on this phone.");
+    } else {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") throw new Error("Notifications weren't allowed.");
+      const reg = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+      await navigator.serviceWorker.ready;
+      const s = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(state.push_key) });
+      const name = isIOS ? "iPhone" : /android/i.test(navigator.userAgent) ? "Android phone" : "Browser";
+      await api("/api/push/subscribe", { subscription: s.toJSON(), name });
+      toast("Notifications on!");
+    }
+  } catch (e) { if (e.message !== "login") toast(e.message); }
+  refresh();
+};
+$("#testBtn").onclick = async () => {
+  try { await api("/api/push/test", {}); toast("Sent. It should pop up in a few seconds."); }
+  catch (e) { if (e.message !== "login") toast(e.message); }
+};
+
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => {});
+document.addEventListener("visibilitychange", () => { if (!document.hidden && timer) refresh(); });
+(async () => {
+  try { const me = await (await fetch("/api/me", { credentials: "same-origin" })).json(); me.authed ? showMain() : showLogin();
+    if (!me.has_pin) $("#loginErr").textContent = "Set a PIN on your PC first (FAAR Manager → Phone remote)."; }
+  catch (e) { showLogin(); $("#loginErr").textContent = "Can't reach your PC."; }
+})();
+</script>
+</body>
+</html>

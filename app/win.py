@@ -202,11 +202,17 @@ def roblox_pids():
     return pids
 
 
-def roblox_windows():
+def roblox_windows(any_title=False):
     pids = roblox_pids()
-    found = {}
+    found, named = {}, set()
     for hwnd, pid, title in top_windows():
-        if pid in pids and title.lower().startswith("roblox"):
+        if pid not in pids:
+            continue
+        if title.lower().startswith("roblox"):
+            if pid not in named:
+                named.add(pid)
+                found[pid] = hwnd
+        elif any_title:
             found.setdefault(pid, hwnd)
     return found
 

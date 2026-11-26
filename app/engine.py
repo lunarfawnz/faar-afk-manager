@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from . import win, purchase, builtin, hallows, route, roblox, ability, items
+from . import win, purchase, builtin, hallows, route, roblox, ability, items, rlogs, storage
 
 
 CLICK_HOLD = 0.12
@@ -46,6 +46,19 @@ class AccState:
     next_sacpop_check: float = 0
     next_hold_check: float = 0
     next_disc_check: float = 0
+    born: float = field(default_factory=time.time)
+    tried: set = field(default_factory=set)
+    hold_fail: dict = field(default_factory=dict)
+    stray: dict = field(default_factory=dict)
+    ev_log: list = field(default_factory=list)
+    offlist: int = 0
+    ending: bool = False
+    mut_name: str = ""
+    mut_votes: int = 0
+    clean_reads: int = 0
+    next_timer: float = 0
+    end_at: float = 0
+    end_reads: list = field(default_factory=list)
     pending_return: bool = False
     next_ability: float = 0
     ability_presses: int = 0
@@ -69,8 +82,14 @@ class Engine:
         self._hotkeys = threading.Thread(target=self._hotkey_loop, daemon=True)
         self._hotkeys.start()
         self.on_status = lambda s: None
+        self.notify = lambda kind, title, body, acc=None: None
+        self.remote_stop = False
+        self.user_closing = False
         self.input_lock = win.InputLock()
         self.relaunch = None
+        self.logwatch = rlogs.Watcher()
+        self.hstats = storage.HallowsStats()
+        self.rejoin_times = {}
         self.selene_queue = []
         self.selene_busy = None
         self.selene_busy_since = 0.0
@@ -114,6 +133,10 @@ class Engine:
             self._thread.join(timeout=5)
         self.log("Automation stopped.")
         self.on_status("Stopped")
+        if not self.user_closing:
+            self.notify("stopped", "Automation stopped",
+                        "Stopped from your phone." if self.remote_stop else "Stopped on the PC.")
+        self.remote_stop = False
 
     def _hotkey_loop(self):
         was8 = was9 = False
@@ -158,8 +181,7 @@ class Engine:
             if not acc.hwnd:
                 continue
             if not win.is_window(acc.hwnd):
-                acc.hwnd, acc.pid, acc.status = 0, 0, "Offline (closed)"
-                self.log("Window closed.", acc)
+                self._window_gone(acc, s)
                 continue
             st = self.states.setdefault(acc.user_id, self._new_state(s))
             if time.time() < st.err_until:
@@ -185,8 +207,7 @@ class Engine:
     def _new_state(self, s):
         now = time.time()
         return AccState(next_rebirth=now + 20, next_boost=self._next_boost(now, s),
-                        next_selene=now + 2, next_event=now + 1, next_ability=now + 5,
-                        cur_slot=int(s["first_slot"]))
+                        next_selene=now + 2, next_event=now + 1, next_ability=now + 5)
 
     @staticmethod
     def _next_boost(now, s):
@@ -201,48 +222,130 @@ class Engine:
         acc.status = "Waiting for you: SACRIFICE pop-up"
         self.log("The SACRIFICE pop-up is showing (rebirth 250). Nothing will be clicked on this account "
                  "until you close it or take it there yourself.", acc, "warn")
+        self.notify("needs_you", "SACRIFICE pop-up", "Rebirth 250 reached. The account is paused until you "
+                    "close the pop-up or take it there yourself.", acc)
+
+    def _window_gone(self, acc, s):
+        st = self.states.get(acc.user_id)
+        acc.hwnd, acc.pid = 0, 0
+        if st and st.hold in ("rejoin", "rejoin-stopped"):
+            return
+        if (acc.features.get("rejoin", True) and s.get("rejoin_if_closed", True)
+                and float(s.get("rejoin_check_s", 20)) > 0):
+            st = st or self._new_state(s)
+            self.states[acc.user_id] = st
+            self._start_rejoin(acc, st, s, "the Roblox window closed")
+            return
+        acc.status = "Offline (closed)"
+        self.log("Window closed.", acc)
+
+    def _check_disconnect(self, acc, st, img):
+        why = builtin.disconnected(img) if img is not None else ""
+        if why:
+            return why
+        try:
+            state = self.logwatch.latest(acc.user_id)
+        except Exception:
+            return ""
+        if not state:
+            return ""
+        kind, since, code = state
+        if kind == "disc" and since > st.born and time.time() - since >= 30:
+            return f"error {code}" if code else "disconnected"
+        return ""
+
+    def _rejoin_allowed(self, acc):
+        now = time.time()
+        times = [x for x in self.rejoin_times.get(acc.user_id, []) if now - x < 1800]
+        if len(times) >= 5:
+            self.rejoin_times[acc.user_id] = times
+            return False
+        times.append(now)
+        self.rejoin_times[acc.user_id] = times
+        return True
 
     def _start_rejoin(self, acc, st, s, why):
+        if not self._rejoin_allowed(acc):
+            st.hold = "rejoin-stopped"
+            st.next_hold_check = time.time() + 1e9
+            acc.status = "Offline (too many rejoins)"
+            self.log(f"Disconnected again ({why}). That's 5 rejoins in 30 min, so this account is left alone "
+                     "now. Launch it yourself when you're back.", acc, "error")
+            self.notify("needs_you", "Stopped rejoining", "5 rejoins in 30 minutes. This account is left "
+                        "alone until you launch it.", acc)
+            return
         st.hold = "rejoin"
         acc.status = f"Rejoining ({why})"
-        self.log(f"Disconnected ({why}{', the server was shut down' if why == 'error 256' else ''}). "
-                 "Rejoining.", acc, "warn")
+        if why.startswith("the Roblox window"):
+            self.log("Roblox closed by itself. Rejoining.", acc, "warn")
+            self.notify("disconnects", "Roblox closed", "Roblox closed by itself. Rejoining.", acc)
+        else:
+            extra = ", the server was shut down" if why == "error 256" else ""
+            self.log(f"Disconnected ({why}{extra}). Rejoining.", acc, "warn")
+            self.notify("disconnects", "Disconnected", f"{why}{extra}. Rejoining.", acc)
         threading.Thread(target=self._rejoin, args=(acc, st, s), daemon=True).start()
 
+    def _sleep(self, secs):
+        end = time.time() + secs
+        while time.time() < end:
+            if self._stop.is_set():
+                return False
+            time.sleep(0.25)
+        return True
+
     def _rejoin(self, acc, st, s):
+        waits = (20, 45, 90, 120)
         try:
+            for attempt in range(1, len(waits) + 2):
+                roblox.close(acc)
+                acc.hwnd, acc.pid = 0, 0
+                if not self._sleep(5):
+                    return
+                if not self.relaunch:
+                    self.log("Can't rejoin from here (no launcher).", acc, "error")
+                    return
+                ok = False
+                if self.relaunch(acc):
+                    acc.status = "Loading game..."
+                    loaded = route.wait_loaded(acc.hwnd, 150, self._stop.is_set)
+                    img = win.capture_window(acc.hwnd) if acc.hwnd and win.is_window(acc.hwnd) else None
+                    if img is None:
+                        why = "the window closed while loading"
+                    else:
+                        why = builtin.disconnected(img)
+                    if loaded and not why:
+                        ok = True
+                    elif not why and img is not None:
+                        self.log("Rejoined, but the game didn't finish loading in time. Will check again later.",
+                                 acc, "warn")
+                        ok = True
+                    else:
+                        self.log(f"The rejoin didn't stick ({why}).", acc, "warn")
+                if ok:
+                    new = self._new_state(s)
+                    new.pending_return = True
+                    self.states[acc.user_id] = new
+                    acc.status = "In game"
+                    return
+                if self._stop.is_set():
+                    return
+                if attempt > len(waits):
+                    break
+                wait = waits[attempt - 1]
+                acc.status = f"Rejoin failed, retrying in {wait}s"
+                self.log(f"Rejoin attempt {attempt} failed. Trying again in {wait}s "
+                         "(servers can take a minute to come back after a shutdown).", acc, "warn")
+                if not self._sleep(wait):
+                    return
             roblox.close(acc)
             acc.hwnd, acc.pid = 0, 0
-            for _ in range(50):
-                if self._stop.is_set():
-                    return
-                time.sleep(0.1)
-            if not self.relaunch:
-                self.log("Can't rejoin from here (no launcher).", acc, "error")
-                return
-            for attempt in range(1, 4):
-                if self._stop.is_set():
-                    return
-                if self.relaunch(acc):
-                    break
-                self.log(f"Rejoin attempt {attempt} failed." + (" Trying again in 60s." if attempt < 3 else ""),
-                         acc, "warn")
-                end = time.time() + 60
-                while attempt < 3 and time.time() < end and not self._stop.is_set():
-                    time.sleep(0.5)
-            else:
-                acc.status = "Offline (rejoin failed)"
-                self.log("Couldn't rejoin after 3 tries. Launch it yourself when you're back.", acc, "error")
-                return
-            acc.status = "Loading game..."
-            if not route.wait_loaded(acc.hwnd, 150, self._stop.is_set):
-                self.log("Rejoined, but the game didn't finish loading in time. Will check again later.",
-                         acc, "warn")
-            new = self._new_state(s)
-            new.pending_return = True
-            self.states[acc.user_id] = new
-            acc.status = "In game"
+            acc.status = "Offline (rejoin failed)"
+            self.log(f"Couldn't rejoin after {len(waits) + 1} tries. Launch it yourself when you're back.",
+                     acc, "error")
+            self.notify("needs_you", "Rejoin failed", f"Couldn't rejoin after {len(waits) + 1} tries. "
+                        "Launch it yourself when you're back.", acc)
         except Exception as e:
+            acc.status = "Offline (rejoin error)"
             self.log(f"Rejoin error: {e}", acc, "error")
         finally:
             st.hold = ""
@@ -310,7 +413,7 @@ class Engine:
                 bg = win.capture_window(acc.hwnd)
             return bg
 
-        if st.hold == "rejoin":
+        if st.hold in ("rejoin", "rejoin-stopped"):
             return []
         if st.pending_return:
             st.pending_return = False
@@ -318,8 +421,7 @@ class Engine:
         if (f.get("rejoin", True) and float(s.get("rejoin_check_s", 20)) > 0
                 and now >= st.next_disc_check):
             st.next_disc_check = now + max(5.0, float(s.get("rejoin_check_s", 20)))
-            img = shot()
-            why = builtin.disconnected(img) if img is not None else ""
+            why = self._check_disconnect(acc, st, shot())
             if why:
                 self._start_rejoin(acc, st, s, why)
                 return []
@@ -402,43 +504,161 @@ class Engine:
         return jobs
 
     def _hallows_decide(self, acc, st, s, img):
-        first, last = int(s["first_slot"]), min(10, int(s["last_slot"]))
+        slots = char_slots(s)
+        word = str(s.get("mutation_word", "dracula") or "dracula").strip().lower()
         reading, why = hallows.hallows_event_cached(img, st.hcache)
         if reading != st.event_on:
             st.ev_votes += 1
             if st.ev_votes >= 2:
                 st.event_on, st.ev_votes = reading, 0
                 if reading:
-                    self.log(f"Hallow's Eve started ({why}).", acc)
-                    if not st.done and not first <= st.cur_slot <= last:
-                        st.cur_slot = first
+                    self._event_started(acc, st, why)
                 else:
-                    self.log("Hallow's Eve ended.", acc)
+                    self._event_ended(acc, st, word)
         else:
             st.ev_votes = 0
 
-        if st.event_on and not st.done:
-            held, _ = hallows.slot_held(img, st.cur_slot)
+        if st.event_on and not st.done and not st.ending:
+            cur = st.cur_slot if st.cur_slot in slots else 0
+            if cur and hallows.slot_held(img, cur)[0]:
+                lead = self._timer_check(acc, st, s, img)
+                if lead:
+                    return lead
+            if not cur:
+                cur = self._pick_slot(acc, st, slots, img)
+                if not cur:
+                    return []
+            held, _ = hallows.slot_held(img, cur)
             if not held:
-                return self._press_for(acc, st, st.cur_slot, True)
+                if st.hold_fail.get(cur, 0) >= 1:
+                    self.log(f"Slot {cur} won't stay held (empty, or the hotbar can't be read in this window). "
+                             "Skipping it.", acc, "warn")
+                    st.ev_log.append((cur, "couldn't hold"))
+                    st.cur_slot = 0
+                    return []
+                return self._press_for(acc, st, cur, True)
             st.intent_count = 0
             st.stuck_n = 0
-            if s.get("mutation_cycle", True) and time.time() >= st.next_mut_check:
-                st.next_mut_check = time.time() + 5
-                word = str(s.get("mutation_word", "dracula") or "dracula")
-                seen = hallows.mutation_seen_cached(img, st.cur_slot, word, st.hcache)
-                if seen is not None:
-                    st.drac_votes = st.drac_votes + 1 if seen else 0
-                if st.drac_votes >= 2:
-                    st.drac_votes = 0
-                    return [("advance",)]
+            if time.time() >= st.next_mut_check:
+                st.next_mut_check = time.time() + 4
+                name = hallows.slot_mutation_cached(img, cur, st.hcache)
+                if not name and word in hallows.MUTATIONS:
+                    seen = hallows.mutation_seen_cached(img, cur, word, st.hcache)
+                    name = word if seen else ""
+                if not name:
+                    st.clean_reads += 1
+                if name and name == st.mut_name:
+                    st.mut_votes += 1
+                else:
+                    st.mut_name, st.mut_votes = name, 1 if name else 0
+                if name and st.mut_votes >= 2:
+                    return self._mutated(acc, st, s, cur, name, word)
             return []
 
-        for slot in range(first, last + 1):
+        out = []
+        for slot in slots:
             if hallows.slot_held(img, slot)[0]:
-                return self._press_for(acc, st, slot, False)
-        st.intent_count = 0
-        st.stuck_n = 0
+                st.stray[slot] = st.stray.get(slot, 0) + 1
+                if st.stray[slot] >= 2 and not out:
+                    st.stray[slot] = 0
+                    out = self._press_for(acc, st, slot, False)
+            else:
+                st.stray.pop(slot, None)
+        if not out:
+            st.intent_count = 0
+            st.stuck_n = 0
+        return out
+
+    def _event_started(self, acc, st, why):
+        st.done = st.ending = False
+        st.tried, st.hold_fail, st.stray, st.ev_log = set(), {}, {}, []
+        st.cur_slot, st.offlist, st.mut_name, st.mut_votes = 0, 0, "", 0
+        st.end_at, st.end_reads, st.next_timer = 0.0, [], 0.0
+        d = self.hstats.event(acc.user_id)
+        self.log(f"Hallow's Eve started ({why}). That's event #{d['since']} since the last Dracula "
+                 f"({d['events']} counted, {d['hits']} Dracula so far).", acc)
+
+    def _event_ended(self, acc, st, word):
+        held = ", ".join(f"slot {n}: {what}" for n, what in st.ev_log) or "nothing changed"
+        d = self.hstats.get(acc.user_id)
+        self.log(f"Hallow's Eve ended. This event: {held}. Events since the last {word.title()}: {d['since']}.", acc)
+        st.cur_slot = 0
+
+    def _pick_slot(self, acc, st, slots, img):
+        for slot in slots:
+            if slot in st.tried:
+                continue
+            st.tried.add(slot)
+            if hallows.slot_is_potion(img, slot):
+                self.log(f"Slot {slot} is a potion, skipping it.", acc)
+                continue
+            name = hallows.slot_mutation(img, slot)
+            if name:
+                self.log(f"Slot {slot} already has {name.title()}, skipping it.", acc)
+                continue
+            st.cur_slot, st.mut_name, st.mut_votes, st.clean_reads = slot, "", 0, 0
+            st.hcache = {k: v for k, v in st.hcache.items() if k == "banner"}
+            return slot
+        st.done = True
+        st.cur_slot = 0
+        self.log("No unmutated characters left in your character slots, so nothing is held for the rest of "
+                 "this event.", acc, "warn")
+        return 0
+
+    def _mutated(self, acc, st, s, cur, name, word):
+        st.mut_name, st.mut_votes = "", 0
+        if st.clean_reads == 0:
+            self.log(f"Slot {cur} already had {name.title()} (it couldn't be read before it was picked). "
+                     "Skipping it.", acc)
+            st.cur_slot = 0
+            return []
+        st.ev_log.append((cur, name.title()))
+        if name == word:
+            d = self.hstats.hit(acc.user_id, time.strftime("%Y-%m-%d %H:%M"))
+            self.log(f"Slot {cur} got {word.title()}! ({d['hits']} so far.) The counter is back to 0.", acc)
+            self.notify("dracula", f"{word.title()}!", f"Slot {cur} got {word.title()} "
+                        f"({d['hits']} so far).", acc)
+            if not s.get("mutation_cycle", True):
+                st.done = True
+                return []
+        else:
+            self.log(f"Slot {cur} became {name.title()} instead of {word.title()}. Moving on.", acc)
+            if name not in hallows.HALLOWS_GIVES:
+                st.offlist += 1
+                if st.offlist >= 2:
+                    st.ending = True
+                    self.hstats.undo_event(acc.user_id)
+                    self.log(f"Failsafe: {st.offlist} characters got mutations Hallow's Eve never gives "
+                             f"(last one: {name.title()}), so this is probably a different event. Stopping and "
+                             "putting the character away. It wasn't added to the counter.", acc, "warn")
+                    return self._press_for(acc, st, cur, False)
+        st.cur_slot = 0
+        return []
+
+    def _timer_check(self, acc, st, s, img):
+        now = time.time()
+        lead = max(0.0, float(s.get("hallows_end_lead_s", 4) or 0))
+        if lead <= 0:
+            return []
+        if st.end_at and now >= st.end_at - lead:
+            st.ending = True
+            left = max(0, int(round(st.end_at - now)))
+            self.log(f"About {left}s left on the Hallow's Eve timer: putting slot {st.cur_slot} away now so a "
+                     "last-second catch can't mutate it.", acc)
+            return self._press_for(acc, st, st.cur_slot, False)
+        if now < st.next_timer:
+            return []
+        left = hallows.event_seconds_left(img)
+        if left is None:
+            st.next_timer = now + 10
+            return []
+        end = now + left
+        st.end_reads = [e for e in st.end_reads if abs(e - end) <= 3][-3:] + [end]
+        if len(st.end_reads) >= 2:
+            st.end_at = sum(st.end_reads) / len(st.end_reads)
+        st.next_timer = now + (1.0 if left <= 25 else min(20.0, left / 4))
+        if left <= 25:
+            st.next_event = min(st.next_event, now + 1)
         return []
 
     def _press_for(self, acc, st, slot, want_held):
@@ -501,10 +721,8 @@ class Engine:
                 if kind == "key":
                     self.log(job[2] + ".", acc)
                     ctx.key(job[1])
-                    if len(job) >= 5:
-                        verify_slot_key(ctx, job[1], job[3], job[4])
-                elif kind == "advance":
-                    do_hallows_advance(ctx)
+                    if len(job) >= 5 and not verify_slot_key(ctx, job[1], job[3], job[4]) and job[4]:
+                        st.hold_fail[job[3]] = st.hold_fail.get(job[3], 0) + 1
                 elif kind == "return":
                     do_return(ctx)
                 elif kind == "anti_afk":
@@ -593,7 +811,7 @@ class Ctx:
             if self.purchase_open():
                 raise PurchasePromptOpen("")
             win.move_to(*self.screen_xy(x, y))
-            win.mouse_click(hold=CLICK_HOLD)
+            win.mouse_click(hold=max(CLICK_HOLD, 1.5 * game_frame(self.s)))
             if i < times - 1:
                 time.sleep(gap)
 
@@ -639,16 +857,18 @@ class Ctx:
         why = "its X was clicked but it stayed open" if clicks else "its X couldn't be found"
         self.log(f"A Robux pop-up is still open ({why}). Close it yourself (never press Buy); "
                  "this account is paused until it's gone.", "error")
+        self.e.notify("needs_you", "Robux pop-up stuck", "A Robux pop-up won't close. Close it yourself "
+                      "(never press Buy); the account is paused until it's gone.", self.acc)
         return False
 
     def _click_raw(self, xy):
         self.ensure_front()
         win.move_to(*self.screen_xy(*xy))
-        win.mouse_click(hold=CLICK_HOLD)
+        win.mouse_click(hold=max(CLICK_HOLD, 1.5 * game_frame(self.s)))
 
-    def key(self, k, hold=KEY_HOLD):
+    def key(self, k, hold=None):
         self.ensure_front()
-        win.press_key(k, hold)
+        win.press_key(k, key_hold(self.s) if hold is None else max(hold, key_hold(self.s)))
 
     def guard(self):
         if self.purchase_open():
@@ -661,35 +881,6 @@ def do_return(ctx):
     else:
         ctx.log("Rejoined, but couldn't confirm the game's screen is clear. Check this account when "
                 "you're back.", "warn")
-
-
-def do_hallows_advance(ctx):
-    st, s = ctx.st, ctx.s
-    word = str(s.get("mutation_word", "dracula") or "dracula")
-    cur, nxt = st.cur_slot, st.cur_slot + 1
-    last = min(10, int(s["last_slot"]))
-    img = ctx.shot()
-    if nxt > last or hallows.slot_is_potion(img, nxt):
-        why = "that was the last character slot" if nxt > last else f"slot {nxt} is a potion"
-        st.done = True
-        ctx.log(f"Slot {cur} has {word.title()}, and {why}: all characters done, putting slot {cur} away. "
-                "(Restart automation to run through them again.)")
-        if hallows.slot_held(img, cur)[0]:
-            ctx.key(win.slot_key(cur))
-        return
-    ctx.log(f"Slot {cur} has {word.title()}. Moving on to slot {nxt}.")
-    ctx.key(win.slot_key(nxt))
-    ctx.wait(1.0)
-    img = ctx.shot()
-    if hallows.slot_held(img, nxt)[0]:
-        st.cur_slot = nxt
-        st.hcache = {k: v for k, v in st.hcache.items() if k == "banner"}
-        st.drac_votes = 0
-        return
-    ctx.log(f"Couldn't hold slot {nxt} (empty?). Stopping here.", "warn")
-    st.done = True
-    if hallows.slot_held(img, cur)[0]:
-        ctx.key(win.slot_key(cur))
 
 
 def _builtin_close_x(ctx, still_open):
@@ -728,15 +919,29 @@ def _open_shop(ctx, name, still_here):
     return opened
 
 
+SCROLL_NOTCH = 100
+SCROLL_MIN_NOTCHES = 2
+SCROLL_MAX_NOTCHES = 8
+SCROLL_TARGET = 0.55
+LAST_ROW = {"selene": ("sinister", "lucrative")}
+
+
+def _ends_list(shop, item, buttons, ids, x, y, sc):
+    row = LAST_ROW.get(shop)
+    if not row or item not in row:
+        return False
+    if item == row[-1]:
+        return True
+    return any(b[1] > x + 40 * sc and abs(b[2] - y) < 20 * sc for b, other in zip(buttons, ids) if other != item)
+
+
 def _buy_everything(ctx, shop="selene"):
     s = ctx.s
     w, h = ctx.size()
     sx0, sy0, sx1, sy1 = builtin.SHOP_AREA
     cx, cy = int((sx0 + sx1) / 2 * w), int((sy0 + sy1) / 2 * h)
-    step_units = max(20, int(60 * h / builtin.REF_H))
-    target = builtin.LIST_HEIGHT * builtin.ui_scale(ctx.shot()) * 0.45
-    units = step_units
-    min_units = max(8, step_units // 3)
+    target = builtin.LIST_HEIGHT * builtin.ui_scale(ctx.shot()) * SCROLL_TARGET
+    notches = SCROLL_MIN_NOTCHES
     handled, total, skipped = [], 0, 0
     robux_hits = 0
     by_choice, told = [], set()
@@ -748,7 +953,8 @@ def _buy_everything(ctx, shop="selene"):
         win.wheel_raw(1000)
         ctx.wait(1.2)
         offset, tracking = 0, True
-        for _step in range(15):
+        bottom_done = False
+        for _step in range(25):
             img = ctx.shot()
             top = builtin.list_top(img)
             buttons = builtin.find_buy_buttons(img)
@@ -763,6 +969,8 @@ def _buy_everything(ctx, shop="selene"):
                     continue
                 if not builtin.stock_text_visible(img, y, sc, top):
                     continue
+                if _ends_list(shop, item, buttons, ids, x, y, sc):
+                    bottom_done = True
                 if not items.wanted(s, shop, item):
                     handled.append((kind, x, list_y))
                     by_choice.append(item)
@@ -798,12 +1006,14 @@ def _buy_everything(ctx, shop="selene"):
                             "next item.", "warn")
                     continue
                 handled.append((kind, x, list_y))
+            if bottom_done:
+                break
             before_img = ctx.shot()
             before = builtin.shop_view(before_img)
             before_list = builtin.list_view(before_img)
             ctx.ensure_front()
             win.move_to(*ctx.screen_xy(cx, cy))
-            win.wheel_raw(-units)
+            win.wheel_raw(-SCROLL_NOTCH * notches, chunk=SCROLL_NOTCH)
             ctx.wait(0.8)
             after_img = ctx.shot()
             after = builtin.shop_view(after_img)
@@ -813,11 +1023,11 @@ def _buy_everything(ctx, shop="selene"):
             if sure:
                 offset += shift
                 if shift > 0:
-                    want = units * target / shift
-                    units = int(max(min_units, min(step_units * 6, units * 1.5, want)))
+                    per = shift / notches
+                    notches = int(max(SCROLL_MIN_NOTCHES, min(SCROLL_MAX_NOTCHES, notches * 2, target // per)))
             else:
                 tracking = False
-                units = max(min_units, units // 2)
+                notches = SCROLL_MIN_NOTCHES
         if not missed:
             break
     return total, skipped, False
@@ -1058,16 +1268,58 @@ def do_anti_afk(ctx):
     ctx.log(f"Anti-AFK: wiggled the mouse and clicked {n} times.")
 
 
+def game_frame(s):
+    try:
+        fps = float(s.get("game_fps", 60) or 60)
+    except (TypeError, ValueError):
+        fps = 60.0
+    return 1.0 / min(240.0, max(1.0, fps))
+
+
+def key_hold(s):
+    return max(KEY_HOLD, 1.5 * game_frame(s))
+
+
+def char_slots(s):
+    got = hallows.parse_slots(s.get("char_slots") or "")
+    if got:
+        return got
+    first, last = int(s.get("first_slot", 2)), min(10, int(s.get("last_slot", 4)))
+    return list(range(first, last + 1))
+
+
 def verify_slot_key(ctx, key, slot, want_held):
-    for look in range(2):
-        ctx.wait(0.9)
-        held = hallows.slot_held(ctx.shot(), slot)[0]
-        if held == bool(want_held):
-            return True
-    ctx.log(f"Slot {slot} didn't change after the press. Pressing it once more, held longer.", "warn")
-    ctx.key(key, hold=0.3)
-    ctx.wait(0.9)
-    return hallows.slot_held(ctx.shot(), slot)[0] == bool(want_held)
+    fr = game_frame(ctx.s)
+    want = bool(want_held)
+    plan = [(None, max(2.6, 13 * fr)), (None, max(3.0, 15 * fr)),
+            (max(0.8, 5 * fr), max(3.5, 17 * fr)), (max(1.2, 5 * fr), max(4.0, 20 * fr))]
+    if want:
+        plan = plan[:3]
+    for attempt, (hold, wait) in enumerate(plan):
+        if attempt:
+            if hallows.slot_held(ctx.shot(), slot)[0] == want:
+                return True
+            what = "held" if want else "put away"
+            if hold:
+                ctx.log(f"Slot {slot} still isn't {what}. Pressing it again and holding the key for {hold:.1f}s.",
+                        "warn")
+            else:
+                ctx.log(f"Slot {slot} still isn't {what} after {plan[attempt - 1][1]:.1f}s. Pressing it once more.",
+                        "warn")
+            ctx.key(key, hold=hold)
+        end = time.time() + wait
+        good = 0
+        while time.time() < end:
+            ctx.wait(max(0.12, fr))
+            if hallows.slot_held(ctx.shot(), slot)[0] == want:
+                good += 1
+                if good >= 2:
+                    return True
+            else:
+                good = 0
+    ctx.log(f"Slot {slot} still isn't {'held' if want else 'put away'} after {len(plan)} presses. "
+            "Check that window.", "warn")
+    return False
 
 
 def do_ability(ctx):
@@ -1094,7 +1346,7 @@ def do_ability(ctx):
         ctx.log("Auto ability: the ability button isn't marked yet (Settings > Auto ability > Mark ability button), "
                 "so the key is pressed on the timer instead.", "warn")
     try:
-        ctx.key(key, hold=KEY_HOLD)
+        ctx.key(key)
     except ValueError:
         ctx.log(f"Auto ability: '{key}' isn't a key this app can press. Change it in Settings > Auto ability.", "error")
         st.disabled.add("ability")

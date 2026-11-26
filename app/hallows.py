@@ -307,3 +307,150 @@ def mutation_seen_cached(img, n, word, cache, world_every=3, max_age=30.0):
         cache["world"] = (w_th, hit, now)
     cache["world_hit"] = hit
     return hit
+
+
+MUTATIONS = ("dracula", "demonic", "sinister", "blood", "nightmare", "electric", "zombie", "ghost",
+             "angelic", "complexity", "diamond", "frozen", "gold", "honey", "lava", "lunar", "mars",
+             "party", "slime", "solar", "toxic", "void")
+HALLOWS_GIVES = ("dracula", "demonic", "sinister", "blood", "nightmare", "electric", "zombie", "ghost")
+TIMER_BOX = (760, 128, 1160, 172)
+
+
+def parse_slots(text):
+    out = []
+    for part in re.split(r"[,\s;]+", str(text or "").strip()):
+        if not part:
+            continue
+        m = re.fullmatch(r"(\d{1,2})\s*-\s*(\d{1,2})", part)
+        if m:
+            a, b = int(m.group(1)) or 10, int(m.group(2)) or 10
+            rng = range(a, b + 1) if a <= b else range(a, b - 1, -1)
+        elif part.isdigit():
+            rng = [int(part) or 10]
+        else:
+            return []
+        for n in rng:
+            if 1 <= n <= 10 and n not in out:
+                out.append(n)
+    return out
+
+
+def _mutation_in(text):
+    best, name = 0.0, ""
+    for tok in re.findall(r"[a-z]+", _clean(text)):
+        if len(tok) < 3:
+            continue
+        for m in MUTATIONS:
+            r = difflib.SequenceMatcher(None, tok, m).ratio()
+            if r > best:
+                best, name = r, m
+    return name if best >= 0.8 else ""
+
+
+def slot_mutation(img, n):
+    if not builtin.ocr_ready():
+        return ""
+    for t in _label_texts(img, n):
+        name = _mutation_in(t)
+        if name:
+            return name
+    return ""
+
+
+def slot_mutation_cached(img, n, cache, max_age=30.0):
+    l, t, _, _ = slot_box(img, n)
+    sc = hud_scale(img)
+    th = _thumb(img, (l - 8 * sc, t - 22 * sc, l + 89 * sc, t))
+    old = cache.get(("mut", n))
+    if old and _same(old[0], th) and time.time() - old[2] < max_age:
+        return old[1]
+    name = slot_mutation(img, n)
+    cache[("mut", n)] = (th, name, time.time())
+    return name
+
+
+def event_seconds_left(img):
+    if not builtin.ocr_ready():
+        return None
+    sub = _crop(img, _top_centre(img, TIMER_BOX))
+    if sub is None:
+        return None
+    s = hud_scale(img)
+    f = max(1.5, 3.0 / max(s, 0.25))
+    hsv = cv2.cvtColor(sub, cv2.COLOR_BGR2HSV)
+    green = (hsv[..., 0] >= 35) & (hsv[..., 0] <= 85) & (hsv[..., 1] >= 110) & (hsv[..., 2] >= 120)
+    if green.mean() < 0.01:
+        return None
+    mask = cv2.resize(np.where(green, 0, 255).astype(np.uint8), None, fx=f, fy=f, interpolation=cv2.INTER_NEAREST)
+    n, lab, stats, _ = cv2.connectedComponentsWithStats((mask == 0).astype(np.uint8))
+    rows = mask.shape[0]
+    tall = [i for i in range(1, n) if rows * 0.15 <= stats[i][3] <= rows * 0.6 and stats[i][2] <= stats[i][3] * 3]
+    if not tall:
+        return None
+    top = float(np.median([stats[i][1] for i in tall]))
+    bot = float(np.median([stats[i][1] + stats[i][3] for i in tall]))
+    lh = max(1.0, bot - top)
+    keep = np.zeros_like(mask, bool)
+    for i in range(1, n):
+        x, y, w, h, area = stats[i]
+        if y >= top - lh * 0.4 and y + h <= bot + lh * 0.4 and h <= lh * 1.5 and w <= lh * 3 and area >= 4:
+            keep |= lab == i
+    dots = [i for i in range(1, n) if stats[i][3] <= lh * 0.4 and stats[i][2] <= lh * 0.4
+            and stats[i][1] >= top - lh * 0.2 and stats[i][1] + stats[i][3] <= bot + lh * 0.2]
+    colon = None
+    for a in dots:
+        for b in dots:
+            ax, ay, aw = stats[a][0], stats[a][1], stats[a][2]
+            bx, by = stats[b][0], stats[b][1]
+            if a != b and abs(ax - bx) <= max(2, aw) and by - ay > lh * 0.3:
+                cx = (ax + bx) // 2
+                if colon is None or cx > colon[0]:
+                    colon = (min(ax, bx), max(ax + aw, bx + stats[b][2]))
+    img = np.where(keep, 0, 255).astype(np.uint8)
+    if colon is not None:
+        gap = np.full((img.shape[0], int(lh * 0.35)), 255, np.uint8)
+        img = np.hstack([img[:, :colon[0]], gap, img[:, colon[0]:colon[1]], gap, img[:, colon[1]:]])
+        keep = img == 0
+    ys = np.nonzero(keep.any(axis=1))[0]
+    xs = np.nonzero(keep.any(axis=0))[0]
+    clean = img[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    k = 60.0 / max(1, clean.shape[0])
+    clean = cv2.resize(clean, None, fx=k, fy=k, interpolation=cv2.INTER_LINEAR)
+    clean = np.where(cv2.GaussianBlur(clean, (5, 5), 0) > 127, 255, 0).astype(np.uint8)
+    clean = cv2.copyMakeBorder(clean, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)
+    tess = builtin._OCR["mod"]
+    try:
+        d = tess.image_to_data(clean, config="--psm 7", lang=builtin.ocr_lang(), output_type=tess.Output.DICT)
+    except Exception:
+        return None
+    words = [(d["text"][i], d["left"][i], d["width"][i]) for i in range(len(d["text"])) if d["text"][i].strip()]
+    if not words:
+        return None
+    _, wl, ww = words[-1]
+    tail = clean[:, max(0, wl - 8):wl + ww + 8]
+    tail = cv2.copyMakeBorder(tail, 0, 0, 20, 20, cv2.BORDER_CONSTANT, value=255)
+    for img2, cfg in ((tail, "--psm 7 -c tessedit_char_whitelist=0123456789:"),
+                      (tail, "--psm 8 -c tessedit_char_whitelist=0123456789:"),
+                      (clean, "--psm 7")):
+        txt = _ocr(Image.fromarray(img2), cfg)
+        got = _parse_clock(txt)
+        if got is not None:
+            return got
+    return None
+
+
+def _parse_clock(txt):
+    t = txt.lower().strip()
+    m = re.findall(r"(\d{1,2})\s*[:.;]\s*(\d{2})", t)
+    if m and int(m[-1][1]) < 60:
+        return int(m[-1][0]) * 60 + int(m[-1][1])
+    m = re.search(r"(?:duration|ation)\W*([0-9tli|!])\W{0,2}(\d{2})\b", t)
+    if m:
+        mm = m.group(1)
+        mm = int(mm) if mm.isdigit() else 1
+        if int(m.group(2)) < 60:
+            return mm * 60 + int(m.group(2))
+    m = re.fullmatch(r"(\d)(\d{2})", re.sub(r"\D", "", t)) if re.fullmatch(r"[\d\s:.;]+", t or "x") else None
+    if m and int(m.group(2)) < 60:
+        return int(m.group(1)) * 60 + int(m.group(2))
+    return None

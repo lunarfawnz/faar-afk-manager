@@ -998,17 +998,23 @@ def disconnected(img):
     if sub is None:
         return ""
     sc = ui_scale(img)
-    f = max(1.0, min(3.0, 1.2 / max(sc, 0.2)))
+    f = max(1.0, min(5.0, 1.6 / max(sc, 0.2)))
     big = cv2.resize(sub, None, fx=f, fy=f, interpolation=cv2.INTER_CUBIC)
     gray = cv2.cvtColor(big, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(big, cv2.COLOR_BGR2HSV)
+    bright = np.where((hsv[..., 2] > 150) & (hsv[..., 1] < 60), 0, 255).astype(np.uint8)
     tess = _OCR["mod"]
-    for v in (gray, 255 - gray):
+    for v in (gray, 255 - gray, bright):
         try:
             text = tess.image_to_string(v, config="--psm 6", lang=_OCR.get("lang", "eng")).lower()
         except Exception:
             continue
         flat = re.sub(r"\s+", " ", text)
-        if "error code" in flat or ("disconnected" in flat and ("reconnect" in flat or "leave" in flat)):
-            m = re.search(r"error code:?\s*(\d+)", flat)
-            return f"error {m.group(1)}" if m else "disconnected"
+        m = re.search(r"(?:error|code)\W{0,3}(?:code)?\W{0,3}(\d{3})", flat)
+        words = sum(w in flat for w in ("disconnect", "reconnect", "leave", "shut down", "shutdown",
+                                        "lost connection", "kicked", "error code"))
+        if m and words:
+            return f"error {m.group(1)}"
+        if "error code" in flat or words >= 2:
+            return "disconnected"
     return ""

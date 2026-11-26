@@ -1,5 +1,5 @@
 @echo off
-title Fish RNG Manager
+title FAAR Manager
 cd /d "%~dp0"
 
 set "PY="
@@ -18,7 +18,7 @@ if not defined PY (
 echo Using %PY%
 
 if not exist data mkdir data
-%PY% -c "import customtkinter, cv2, numpy, PIL, requests, psutil, pytesseract" 1>NUL 2>&1
+%PY% -c "import re, importlib.metadata as m; [m.version(re.split(r'[<>=!~;\[ ]', l.strip())[0]) for l in open('requirements.txt') if l.strip() and not l.startswith('#')]; import customtkinter, cv2, numpy, PIL, requests, psutil, pytesseract, cryptography" 1>NUL 2>&1
 if not errorlevel 1 goto deps_ok
 echo Installing what the app needs...
 %PY% -m pip install --upgrade --timeout 30 -r requirements.txt

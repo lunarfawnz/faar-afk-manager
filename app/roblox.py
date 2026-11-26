@@ -1,6 +1,7 @@
 import os
 import random
 import re
+import threading
 import time
 import urllib.parse
 import uuid
@@ -137,8 +138,8 @@ def resolve_link(link, cookie=None):
     return place_id, (code.group(1) if code else None), name
 
 
-def launch_uri(ticket, place_id, link_code=None):
-    tracker = str(random.randint(100_000_000_000, 999_999_999_999))
+def launch_uri(ticket, place_id, link_code=None, tracker=None):
+    tracker = tracker or str(random.randint(100_000_000_000, 999_999_999_999))
     if link_code:
         place_url = ("https://www.roblox.com/Game/PlaceLauncher.ashx?request=RequestPrivateGame"
                      f"&browserTrackerId={tracker}&placeId={place_id}&accessCode=&linkCode={link_code}"
@@ -161,47 +162,175 @@ def launch_uri(ticket, place_id, link_code=None):
     return "+".join(parts)
 
 
-def _wait_new_window(account, before, wait_s, status):
-    end = time.time() + wait_s
-    while time.time() < end:
-        time.sleep(1)
-        wins = win.roblox_windows()
-        new = [pid for pid in wins if pid not in before]
-        if new:
-            pid = new[0]
-            hwnd = wins[pid]
-            win.set_title(hwnd, f"Roblox - {account.username}")
-            return pid, hwnd
-        status(f"Waiting for window... {int(end - time.time())}s")
-    return None
+class Pending:
+    def __init__(self, account, tracker, before):
+        self.account = account
+        self.tracker = tracker
+        self.before = before
+        self.t = time.time()
+        self.got = None
+        self.pid = None
+        self.done = False
 
 
-def launch(account, place_id, status=lambda s: None, wait_s=100, link_code=None, tries=2):
+_pending = []
+_trackers = set()
+_plock = threading.Lock()
+_claimed = set()
+_cmd_cache = {}
+
+
+def _cmdline(pid):
+    if pid in _cmd_cache:
+        return _cmd_cache[pid]
+    import psutil
+    try:
+        cmd = " ".join(psutil.Process(pid).cmdline())
+    except Exception:
+        cmd = None
+    if cmd is not None:
+        _cmd_cache[pid] = cmd
+    return cmd
+
+
+def _pids_with_tracker(tracker):
+    out = []
+    for pid in win.roblox_pids():
+        cmd = _cmdline(pid)
+        if cmd and tracker in cmd:
+            out.append(pid)
+    return out
+
+
+def start(account, place_id, link_code=None):
     if not win.hold_multi_instance_lock() and win.roblox_pids():
         raise RobloxError("Multi-instance is off because a Roblox window was opened before it could be "
                           "turned on. Close every Roblox window, wait a few seconds, then launch again.")
-    before = win.roblox_pids()
+    ticket = auth_ticket(account.cookie)
+    tracker = str(random.randint(100_000_000_000, 999_999_999_999))
+    p = Pending(account, tracker, win.roblox_pids())
+    with _plock:
+        _pending.append(p)
+        _trackers.add(tracker)
+    os.startfile(launch_uri(ticket, place_id, link_code, tracker))
+    return p
+
+
+_ctime = {}
+
+
+def _created(pid):
+    if pid not in _ctime:
+        import psutil
+        try:
+            _ctime[pid] = psutil.Process(pid).create_time()
+        except Exception:
+            return time.time()
+    return _ctime[pid]
+
+
+def _poll(known_pids=()):
+    with _plock:
+        live = [p for p in _pending if not p.done and p.got is None]
+        if not live:
+            return
+        pids = win.roblox_pids()
+        cmds = {pid: _cmdline(pid) for pid in pids}
+        for p in live:
+            if p.pid is not None and p.pid not in pids:
+                p.pid = None
+        taken = set(_claimed) | set(known_pids) | {p.pid for p in _pending if p.pid}
+        for p in live:
+            if p.pid is None:
+                own = [pid for pid, c in cmds.items() if c and p.tracker in c and pid not in taken]
+                if own:
+                    p.pid = min(own, key=_created)
+                    taken.add(p.pid)
+        spare = sorted((pid for pid in pids if pid not in taken
+                        and not (cmds.get(pid) and any(tr in cmds[pid] for tr in _trackers))), key=_created)
+        for pid in spare:
+            fits = [p for p in live if p.pid is None and pid not in p.before and _created(pid) >= p.t - 2]
+            if fits:
+                p = min(fits, key=lambda x: x.t)
+                p.pid = pid
+                taken.add(pid)
+        wins = win.roblox_windows(any_title=True)
+        for p in live:
+            if p.pid is not None and p.pid in wins:
+                p.got = (p.pid, wins[p.pid])
+                _claimed.add(p.pid)
+
+
+def wait_window(p, wait_s=100, status=lambda s: None, cancelled=lambda: False, known_pids=lambda: ()):
+    end = time.time() + wait_s
+    extended = False
+    try:
+        while True:
+            if cancelled():
+                for pid in _pids_with_tracker(p.tracker):
+                    _kill(pid)
+                return None
+            _poll(known_pids())
+            if p.got:
+                pid, hwnd = p.got
+                win.set_title(hwnd, f"Roblox - {p.account.username}")
+                return pid, hwnd
+            left = int(end - time.time())
+            if left <= 0:
+                if not extended and _pids_with_tracker(p.tracker):
+                    extended = True
+                    end = time.time() + 90
+                    continue
+                return None
+            status(f"Waiting for window... {left}s" + (" (Roblox is still starting)" if extended else ""))
+            time.sleep(0.5)
+    finally:
+        with _plock:
+            p.done = True
+            if p in _pending:
+                _pending.remove(p)
+
+
+def forget(pid):
+    with _plock:
+        _claimed.discard(pid)
+        _cmd_cache.pop(pid, None)
+        _ctime.pop(pid, None)
+
+
+def launch(account, place_id, status=lambda s: None, wait_s=100, link_code=None, tries=2,
+           cancelled=lambda: False, known_pids=lambda: ()):
     for attempt in range(1, tries + 1):
-        status("Getting login ticket...")
-        ticket = auth_ticket(account.cookie)
-        status("Starting Roblox..." if attempt == 1 else "Starting Roblox again...")
-        os.startfile(launch_uri(ticket, place_id, link_code))
-        got = _wait_new_window(account, before, wait_s, status)
+        status("Getting login ticket..." if attempt == 1 else "Starting Roblox again...")
+        p = start(account, place_id, link_code)
+        got = wait_window(p, wait_s, status, cancelled, known_pids)
         if got:
             return got
-        time.sleep(3)
-        wins = win.roblox_windows()
-        late = [pid for pid in wins if pid not in before]
-        if late:
-            win.set_title(wins[late[0]], f"Roblox - {account.username}")
-            return late[0], wins[late[0]]
-    raise RobloxError("Roblox didn't open a window in time (tried twice).")
+        if cancelled():
+            raise RobloxError("Cancelled.")
+    raise RobloxError(f"Roblox didn't open a window in time (tried {tries} times).")
+
+
+def _kill(pid):
+    import psutil
+    try:
+        pr = psutil.Process(pid)
+        if (pr.name() or "").lower().startswith("roblox"):
+            pr.kill()
+    except Exception:
+        pass
 
 
 def close(account, wait_s=10):
     import time
     import psutil
     pids = {account.pid} if account.pid else set()
+    try:
+        for pid, hwnd in win.roblox_windows().items():
+            if win.window_title(hwnd) == f"Roblox - {account.username}":
+                pids.add(pid)
+    except Exception:
+        pass
     if account.hwnd and win.is_window(account.hwnd):
         try:
             p = win.window_pid(account.hwnd)
@@ -218,6 +347,8 @@ def close(account, wait_s=10):
                 procs.append(pr)
         except Exception:
             pass
+    for pid in pids:
+        forget(pid)
     if not procs:
         return
     _, alive = psutil.wait_procs(procs, timeout=wait_s)

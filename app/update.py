@@ -74,6 +74,14 @@ def _download(url, dest, progress=None):
     return os.path.getsize(dest)
 
 
+def _clean_env():
+    env = {k: v for k, v in os.environ.items()
+           if not (k.startswith("_MEI") or k.startswith("_PYI")
+                   or k in ("TCL_LIBRARY", "TK_LIBRARY", "TESSDATA_PREFIX"))}
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return env
+
+
 def update_exe(info, progress=None):
     url = info.get("exe_url")
     if not url:
@@ -101,7 +109,7 @@ def update_exe(info, progress=None):
          exe)
     with open(bat, "w") as f:
         f.write(script)
-    subprocess.Popen(["cmd", "/c", bat], creationflags=0x08000000)
+    subprocess.Popen(["cmd", "/c", bat], creationflags=0x08000000, env=_clean_env())
     return True
 
 
@@ -136,7 +144,7 @@ def update_source(progress=None):
 
 def restart():
     if is_frozen():
-        subprocess.Popen([sys.executable])
+        subprocess.Popen([sys.executable], env=_clean_env())
     else:
         subprocess.Popen([sys.executable, os.path.join(_app_dir(), "main.py")])
     os._exit(0)

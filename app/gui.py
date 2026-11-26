@@ -4,6 +4,7 @@ import sys
 import queue
 import threading
 import time
+import collections
 import tkinter as tk
 from tkinter import messagebox
 
@@ -16,7 +17,7 @@ from . import win, roblox
 from .engine import Engine
 from .storage import (load_accounts, save_accounts, load_settings, save_settings, Account,
                       DATA_DIR, protect)
-from . import builtin, hallows, optimize, update, ability, items
+from . import builtin, hallows, optimize, update, ability, items, engine, remote
 from .version import __version__
 
 BG = "#0e1016"
@@ -90,12 +91,21 @@ class App(ctk.CTk):
         self.accounts = load_accounts()
         self._ui_q = queue.Queue()
         self._launch_lock = threading.Lock()
+        self.launching = {}
+        self._arrange_guard = threading.Lock()
+        self._arrange_due = 0.0
+        self._arrange_waiting = False
         self.log_lines = queue.Queue()
+        self.log_ring = collections.deque(maxlen=400)
+        self.log_seq = 0
+        self._log_guard = threading.Lock()
         self._log_file = open(os.path.join(DATA_DIR, "log.txt"), "a", encoding="utf-8")
 
         self.engine = Engine(lambda: self.accounts, lambda: self.settings, self.log)
         self.engine.on_status = lambda st: self.ui(lambda: self._set_engine_status(st))
         self.engine.relaunch = self.relaunch_blocking
+        self.remote = remote.Remote(self)
+        self.engine.notify = self.remote.notify
         self._lowered, self._prio_warned, self._next_trim = set(), set(), time.time() + 120
         self._past_taskbar_warned = {}
         self._maxed, self._seen, self._maxing = set(), {}, False
@@ -113,7 +123,8 @@ class App(ctk.CTk):
         self.content.grid_columnconfigure(0, weight=1)
         self.content.grid_rowconfigure(0, weight=1)
 
-        self._page_makers = {"accounts": AccountsPage, "automation": AutomationPage, "log": LogPage}
+        self._page_makers = {"accounts": AccountsPage, "automation": AutomationPage, "log": LogPage,
+                             "remote": RemotePage}
         self.pages = {}
         self._current = None
         self.show("accounts")
@@ -122,6 +133,8 @@ class App(ctk.CTk):
         self.after(100, self._pump)
         self.after(1000, self._tick)
         self.after(120, self._prebuild_pages)
+        if self.settings.get("remote_enabled") and self.remote.has_pin():
+            self.after(800, self.remote.start)
         if self.settings.get("check_updates", True):
             self.after(1500, lambda: threading.Thread(target=self._check_updates, daemon=True).start())
         if win.IS_WIN:
@@ -312,11 +325,90 @@ class App(ctk.CTk):
         who = f"[{acc.username}] " if acc else ""
         line = f"{time.strftime('%H:%M:%S')}  {who}{msg}"
         self.log_lines.put((line, level))
+        with self._log_guard:
+            self.log_seq += 1
+            self.log_ring.append((self.log_seq, line, level))
         try:
             self._log_file.write(line + "\n")
             self._log_file.flush()
         except Exception:
             pass
+
+    def log_since(self, since):
+        with self._log_guard:
+            rows = [r for r in self.log_ring if r[0] > since]
+        return [{"id": i, "text": line, "level": lvl} for i, line, lvl in rows[-200:]]
+
+    def find_account(self, uid):
+        return next((a for a in self.accounts if a.user_id == uid), None)
+
+    def save_settings_now(self):
+        save_settings(self.settings)
+
+    def screenshot_jpeg(self, acc):
+        if not (acc.hwnd and win.is_window(acc.hwnd)):
+            return None
+        img = win.capture_window(acc.hwnd)
+        if img is None:
+            return None
+        h, w = img.shape[:2]
+        if w > 960:
+            img = cv2.resize(img, (960, int(h * 960 / w)), interpolation=cv2.INTER_AREA)
+        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 72])
+        return buf.tobytes() if ok else None
+
+    def remote_engine(self, action):
+        if action == "start":
+            if not any(a.hwnd for a in self.accounts):
+                return "Launch at least one account first."
+            self.engine.start()
+            return "Automation started."
+        if action == "pause":
+            self.engine.pause()
+            return f"Automation {self.engine.status.lower()}."
+        if action == "stop":
+            self.engine.remote_stop = True
+            threading.Thread(target=self.engine.stop, daemon=True).start()
+            return "Stopping automation."
+        return "Unknown action."
+
+    def remote_account(self, acc, action):
+        alive = bool(acc.hwnd) and win.is_window(acc.hwnd)
+        if action == "launch":
+            if alive:
+                return "It's already open."
+            self.log("Phone remote: launching.", acc)
+            self.ui(lambda: self.launch([acc]))
+            return "Launching."
+        if action == "cancel":
+            self.cancel_launch(acc)
+            return "Cancelling."
+        if action == "close":
+            if not alive:
+                return "It's not open."
+            threading.Thread(target=roblox.close, args=(acc,), daemon=True).start()
+            acc.hwnd, acc.pid, acc.status = 0, 0, "Offline"
+            self.log("Phone remote: closed Roblox.", acc)
+            return "Closed."
+        if action == "rejoin":
+            self.log("Phone remote: rejoining.", acc)
+
+            def go():
+                roblox.close(acc)
+                acc.hwnd, acc.pid, acc.status = 0, 0, "Offline"
+                time.sleep(3)
+                self.ui(lambda: self.launch([acc]))
+            threading.Thread(target=go, daemon=True).start()
+            return "Rejoining."
+        return "Unknown action."
+
+    def remote_feature(self, acc, key, on):
+        acc.features[key] = on
+        self.save()
+        self.log(f"Phone remote: {dict(remote.FEATURES).get(key, key)} turned {'on' if on else 'off'}.", acc)
+        page = self.pages.get("accounts")
+        if page is not None:
+            self.ui(page.rebuild)
 
     def _build_sidebar(self):
         sb = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=0, width=230)
@@ -335,7 +427,7 @@ class App(ctk.CTk):
 
         self.nav = {}
         items = [("accounts", "👥   Accounts"), ("automation", "⚙️   Settings"),
-                 ("log", "📜   Activity log")]
+                 ("log", "📜   Activity log"), ("remote", "📱   Phone remote")]
         for i, (key, label) in enumerate(items):
             b = ctk.CTkButton(sb, text=label, anchor="w", font=F(14), height=42, corner_radius=10,
                               fg_color="transparent", hover_color=CARD, text_color=TEXT,
@@ -424,10 +516,67 @@ class App(ctk.CTk):
         self.log(f"Game: {name} (place {pid}){'  ·  private server' if code else ''}")
         return pid, code
 
+    def _known_pids(self):
+        return {a.pid for a in self.accounts if a.pid and a.hwnd}
+
+    def is_launching(self, acc):
+        return acc.user_id in self.launching
+
+    def cancel_launch(self, acc):
+        job = self.launching.get(acc.user_id)
+        if job is not None:
+            job["cancel"] = True
+            acc.status = "Cancelling..."
+
+    def _arrange_soon(self):
+        if not self.settings.get("auto_arrange"):
+            return
+        with self._arrange_guard:
+            self._arrange_due = time.time() + 2.5
+            if self._arrange_waiting:
+                return
+            self._arrange_waiting = True
+
+        def go():
+            while True:
+                with self._arrange_guard:
+                    left = self._arrange_due - time.time()
+                    if left <= 0:
+                        self._arrange_waiting = False
+                        break
+                time.sleep(min(left, 0.5))
+            self.arrange()
+
+        threading.Thread(target=go, daemon=True).start()
+
     def launch(self, accs):
         if not win.IS_WIN:
             messagebox.showerror("Windows only", "Launching Roblox only works on Windows.")
             return
+        todo = [a for a in accs if not (a.hwnd and win.is_window(a.hwnd)) and a.user_id not in self.launching]
+        if not todo:
+            return
+        for a in todo:
+            self.launching[a.user_id] = {"cancel": False}
+            a.status = "Queued..."
+
+        def wait_for(a, job, p):
+            try:
+                got = roblox.wait_window(p, 100, status=lambda t: setattr(a, "status", t),
+                                         cancelled=lambda: job["cancel"], known_pids=self._known_pids)
+                if got:
+                    a.pid, a.hwnd = got
+                    a.status = "In game"
+                    self.log("Roblox window opened.", a)
+                    self._arrange_soon()
+                elif job["cancel"]:
+                    a.status = "Offline"
+                    self.log("Launch cancelled.", a)
+                else:
+                    a.status = "Failed"
+                    self.log("Roblox didn't open a window in time. Click Launch to try again.", a, "error")
+            finally:
+                self.launching.pop(a.user_id, None)
 
         def run():
             with self._launch_lock:
@@ -435,24 +584,33 @@ class App(ctk.CTk):
                     place, link_code = self.ensure_place()
                 except Exception as e:
                     self.log(f"Couldn't look up the game: {e}", level="error")
+                    for a in todo:
+                        a.status = "Failed"
+                        self.launching.pop(a.user_id, None)
                     return
                 self.apply_graphics(quiet=True)
-                todo = [a for a in accs if not (a.hwnd and win.is_window(a.hwnd))]
+                gap = max(0.0, float(self.settings["launch_gap_s"]))
                 for i, a in enumerate(todo):
-                    a.status = "Launching..."
+                    job = self.launching.get(a.user_id)
+                    if job is None or job["cancel"]:
+                        a.status = "Offline"
+                        self.launching.pop(a.user_id, None)
+                        continue
+                    a.status = "Starting Roblox..."
                     try:
-                        a.pid, a.hwnd = roblox.launch(a, place, status=lambda t, a=a: setattr(a, "status", t),
-                                                     link_code=link_code)
-                        a.status = "In game"
-                        self.log("Roblox window opened.", a)
-                        if self.settings.get("auto_arrange"):
-                            time.sleep(2)
-                            self.arrange()
+                        p = roblox.start(a, place, link_code)
                     except Exception as e:
                         a.status = "Failed"
+                        self.launching.pop(a.user_id, None)
                         self.log(f"Launch failed: {e}", a, "error")
-                    if i < len(todo) - 1:
-                        time.sleep(float(self.settings["launch_gap_s"]))
+                        continue
+                    threading.Thread(target=wait_for, args=(a, job, p), daemon=True).start()
+                    rest = [b for b in todo[i + 1:] if not self.launching.get(b.user_id, {"cancel": True})["cancel"]]
+                    if rest:
+                        end = time.time() + gap
+                        while time.time() < end and rest and not all(
+                                self.launching.get(b.user_id, {"cancel": True})["cancel"] for b in rest):
+                            time.sleep(0.2)
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -477,11 +635,10 @@ class App(ctk.CTk):
                 self.apply_graphics(quiet=True)
                 acc.status = "Rejoining..."
                 acc.pid, acc.hwnd = roblox.launch(acc, place, status=lambda t: setattr(acc, "status", t),
-                                                  link_code=link_code)
+                                                  link_code=link_code, known_pids=self._known_pids)
                 self.log("Rejoined: Roblox window opened.", acc)
-                if self.settings.get("auto_arrange"):
-                    time.sleep(2)
-                    self.arrange()
+                self._arrange_soon()
+                time.sleep(max(0.0, float(self.settings.get("launch_gap_s", 0))))
                 return True
             except Exception as e:
                 acc.status = "Rejoin failed"
@@ -547,7 +704,9 @@ class App(ctk.CTk):
 
     def _on_close(self):
         try:
+            self.remote.notify("stopped", "FAAR Manager closed", "The app was closed on the PC.")
             if self.engine.status != "Stopped":
+                self.engine.user_closing = True
                 self.engine.stop()
         finally:
             save_settings(self.settings)
@@ -661,21 +820,28 @@ class AccountCard(ctk.CTkFrame):
 
     def refresh(self):
         alive = bool(self.acc.hwnd) and win.is_window(self.acc.hwnd)
+        busy = not alive and self.app.is_launching(self.acc)
         st = self.acc.status if (alive or self.acc.status != "In game") else "Offline"
-        state = (st, alive)
+        state = (st, alive, busy)
         if state == getattr(self, "_last_state", None):
             return
         self._last_state = state
         self.status.configure(text=f"● {st}", text_color=status_color(st))
-        self.launch_btn.configure(text="Close" if alive else "Launch",
-                                  fg_color=BAD if alive else ACCENT,
-                                  hover_color="#e04a59" if alive else ACCENT_HI)
+        if busy:
+            self.launch_btn.configure(text="Cancel", fg_color=CARD_HI, hover_color=BAD)
+        else:
+            self.launch_btn.configure(text="Close" if alive else "Launch",
+                                      fg_color=BAD if alive else ACCENT,
+                                      hover_color="#e04a59" if alive else ACCENT_HI)
 
     def _toggle(self, key, var):
         self.acc.features[key] = bool(var.get())
         self.app.save()
 
     def _launch(self):
+        if not (self.acc.hwnd and win.is_window(self.acc.hwnd)) and self.app.is_launching(self.acc):
+            self.app.cancel_launch(self.acc)
+            return
         if self.acc.hwnd and win.is_window(self.acc.hwnd):
             acc = self.acc
             threading.Thread(target=roblox.close, args=(acc,), daemon=True).start()
@@ -796,7 +962,9 @@ SETTINGS_FORM = [
          "screen, not Roblox fullscreen. Once per window, so you can still resize it yourself."),
         ("untiled_monitor", "Put windows with Tile off on", "monitor_keep",
          "Where untiled windows are maximized. “Wherever it opens” leaves them on their own monitor."),
-        ("launch_gap_s", "Seconds between launches", float, "Gives each client time to sign in."),
+        ("launch_gap_s", "Seconds between launches", float,
+         "Time between starting each Roblox. It no longer waits for the window to open first, so "
+         "accounts load side by side. Raise it if your PC struggles with several opening at once."),
     ]),
     ("Boost shop", [
         ("boost_every_min", "Restock every (min)", float, ""),
@@ -854,12 +1022,16 @@ SETTINGS_FORM = [
         ("event_check_s", "Check event every (s)", float,
          "Reads the event banner at the top. Needs Tesseract (the text reader). Works best on a "
          "full-size window; small tiles make the text tiny."),
-        ("first_slot", "First character slot", int, "Hotbar slot of your first character (2 = right after the rod)."),
-        ("last_slot", "Last character slot", int,
-         "Stops after this one. Also stops at the first slot it can read as a Potion."),
+        ("char_slots", "Character slots", str,
+         "Hotbar slots with characters, like 2-4 or 3,4,6,9 (0 = slot 10). They don't have to be next to "
+         "each other. Characters that already have a mutation and potions are skipped."),
         ("mutation_cycle", "Move to the next character when the mutation shows", bool,
-         "When the held character shows the mutation below, hold the next slot."),
+         "When the held character gets the mutation below, hold the next unmutated one. A character that gets "
+         "a different mutation is always swapped out."),
         ("mutation_word", "Mutation to wait for", str, "Dracula by default."),
+        ("hallows_end_lead_s", "Put the character away this many seconds before the event ends", float,
+         "Reads the event's countdown so a last-second catch can't mutate it. Needs a fairly big window "
+         "(about 1500 px wide or more) to read the timer; otherwise it's put away when the banner goes. 0 = off."),
     ]),
     ("General", [
         ("anti_afk_min", "Anti-AFK after idle (min)", float,
@@ -868,7 +1040,14 @@ SETTINGS_FORM = [
         ("anti_afk_clicks", "Anti-AFK clicks each time", int, ""),
         ("rejoin_check_s", "Check for 'Disconnected' every (s)", float,
          "With Rejoin on, a disconnected account (server shut down, error 256/277...) is closed and "
-         "launched again, and the Welcome Back pop-up is closed so it keeps fishing. 0 = off."),
+         "launched again, and the Welcome Back pop-up is closed so it keeps fishing. It reads the pop-up "
+         "and Roblox's own log files, so it works on small windows too. 0 = off."),
+        ("rejoin_if_closed", "Also rejoin if Roblox closes or crashes", bool,
+         "With Rejoin on, an account whose Roblox window closes by itself is launched again. Use the "
+         "Close button in this app to close an account for good."),
+        ("game_fps", "Roblox FPS limit", float,
+         "If you cap Roblox's FPS low to save CPU (5-15 FPS), put that number here so key presses and "
+         "clicks are held long enough for the game to notice them. Leave 60 if you don't cap it."),
         ("restore_user_focus", "Give focus back to my window after each action", bool, ""),
         ("wait_for_idle_s", "Wait until mouse/keyboard are idle for (s)", float,
          "Before taking control, waits for this long with no input from you or another script. 0 = off."),
@@ -909,6 +1088,8 @@ class AutomationPage(ctk.CTkFrame):
             r = 1
             for key, label, typ, hint in fields:
                 val = app.settings.get(key)
+                if key == "char_slots" and not str(val or "").strip():
+                    val = f"{app.settings.get('first_slot', 2)}-{app.settings.get('last_slot', 4)}"
                 ctk.CTkLabel(card, text=label, font=F(12), text_color=TEXT, anchor="w").grid(
                     row=r, column=0, sticky="w", padx=16, pady=(6, 0))
                 if typ in ("monitor", "monitor_keep"):
@@ -1037,8 +1218,8 @@ class AutomationPage(ctk.CTkFrame):
                 self.app.settings[key] = typ(v.get()) if typ is not str else v.get().strip()
             except ValueError:
                 errors.append(key)
-        if self.app.settings["last_slot"] < self.app.settings["first_slot"]:
-            errors.append("last_slot")
+        if self.app.settings.get("char_slots", "").strip() and not hallows.parse_slots(self.app.settings["char_slots"]):
+            errors.append("char_slots")
         if errors:
             self.saved.configure(text=f"Check: {', '.join(errors)}", text_color=BAD)
             return
@@ -1102,9 +1283,8 @@ def test_detection(app, acc):
         found.append(f"{len(btns)} cash/gem button(s)")
     if builtin.sacrifice_popup(img):
         found.append("SACRIFICE pop-up")
-    first, last = int(s["first_slot"]), min(10, int(s["last_slot"]))
     held_slots = []
-    for slot in range(first, last + 1):
+    for slot in engine.char_slots(s):
         l, t, r, b = hallows.slot_box(img, slot)
         held, frac = hallows.slot_held(img, slot)
         if held:
@@ -1114,6 +1294,11 @@ def test_detection(app, acc):
     if builtin.ocr_ready():
         on, why = hallows.hallows_event(img)
         found.append("Hallow's Eve: " + ("ON" if on else "not showing"))
+        if on:
+            left = hallows.event_seconds_left(img)
+            found.append("timer: " + (f"{left // 60}:{left % 60:02d} left" if left is not None else "can't read it"))
+        muts = [f"{n}={m.title()}" for n in engine.char_slots(s) for m in [hallows.slot_mutation(img, n)] if m]
+        found.append("mutations: " + (", ".join(muts) if muts else "none read"))
         ocr = "text reader ON"
     else:
         ocr = "text reader OFF (install Tesseract: needed for Hallow's Eve and OUT OF STOCK)"
@@ -1140,6 +1325,186 @@ class PreviewDialog(ctk.CTkToplevel):
             if label:
                 c.create_text(x * scale + 2, y * scale - 2, text=label, anchor="sw", fill=color,
                               font=("Segoe UI", 9, "bold"))
+
+
+class RemotePage(ctk.CTkFrame):
+    def __init__(self, master, app):
+        super().__init__(master, fg_color=BG, corner_radius=0)
+        self.app, self.r = app, app.remote
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        self.body = ctk.CTkScrollableFrame(self, fg_color=BG, corner_radius=0)
+        self.body.grid(row=0, column=0, sticky="nsew")
+        self.body.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(self.body, text="Phone remote", font=F(26, "bold"), text_color=TEXT).grid(
+            row=0, column=0, sticky="w", padx=28, pady=(26, 0))
+        ctk.CTkLabel(self.body, text="Watch and control FAAR Manager from your phone, and get notifications. It runs "
+                     "over Tailscale, so nothing is opened to the internet, and your Roblox logins never leave "
+                     "this PC.", font=F(12), text_color=MUTED, wraplength=640, justify="left").grid(
+            row=1, column=0, sticky="w", padx=28, pady=(2, 12))
+
+        c1 = self._card(2, "1. Tailscale",
+                        "Install Tailscale on this PC and on your phone (tailscale.com, free) and sign in to the "
+                        "same account on both.")
+        self.ts_lbl = ctk.CTkLabel(c1, text="", font=F(12), text_color=MUTED, wraplength=560, justify="left")
+        self.ts_lbl.grid(row=2, column=0, columnspan=2, sticky="w", padx=16, pady=(2, 12))
+
+        c2 = self._card(3, "2. PIN", "Your phone asks for this PIN once. Use at least 6 digits.")
+        self.pin = ctk.CTkEntry(c2, show="•", width=180, height=32, fg_color=BG, border_color=BORDER,
+                                corner_radius=8, font=F(13))
+        self.pin.grid(row=2, column=0, sticky="w", padx=16, pady=(4, 4))
+        pill_button(c2, "Save PIN", self._save_pin).grid(row=2, column=1, sticky="e", padx=16)
+        self.pin_lbl = ctk.CTkLabel(c2, text="", font=F(12), text_color=MUTED)
+        self.pin_lbl.grid(row=3, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 12))
+
+        c3 = self._card(4, "3. Turn it on", "Starts the remote and shares it on your Tailscale network as an "
+                        "https:// link.")
+        self.on_var = tk.BooleanVar(value=bool(app.settings.get("remote_enabled")))
+        ctk.CTkSwitch(c3, text="Phone remote on", variable=self.on_var, command=self._toggle,
+                      progress_color=ACCENT, font=F(13)).grid(row=2, column=0, sticky="w", padx=16, pady=4)
+        pill_button(c3, "Set up Tailscale link", self._setup_link, width=180).grid(row=2, column=1, sticky="e", padx=16)
+        self.url_lbl = ctk.CTkLabel(c3, text="", font=F(14, "bold"), text_color=ACCENT_HI, wraplength=560,
+                                    justify="left")
+        self.url_lbl.grid(row=3, column=0, sticky="w", padx=16, pady=(6, 0))
+        self.copy_btn = ghost_button(c3, "Copy link", self._copy)
+        self.copy_btn.grid(row=3, column=1, sticky="e", padx=16, pady=(6, 0))
+        self.st_lbl = ctk.CTkLabel(c3, text="", font=F(12), text_color=MUTED, wraplength=560, justify="left")
+        self.st_lbl.grid(row=4, column=0, columnspan=2, sticky="w", padx=16, pady=(4, 12))
+
+        self._card(5, "4. On your phone",
+                   "Open the link (with Tailscale on), then add it to your home screen: on iPhone tap Share → "
+                   "Add to Home Screen, on Android tap ⋮ → Add to Home screen / Install app. Open FAAR from the "
+                   "home screen, type your PIN, then tap Turn on under Notifications.")
+
+        c5 = self._card(6, "Notify me about", "")
+        r = 2
+        self.kind_vars = {}
+        for k, label in remote.KINDS.items():
+            v = tk.BooleanVar(value=bool(app.settings.get(f"notify_{k}", True)))
+            ctk.CTkSwitch(c5, text=label, variable=v, progress_color=ACCENT, font=F(13),
+                          command=lambda k=k, v=v: self._kind(k, v)).grid(row=r, column=0, columnspan=2,
+                                                                           sticky="w", padx=16, pady=3)
+            self.kind_vars[k] = v
+            r += 1
+        self.phones_lbl = ctk.CTkLabel(c5, text="", font=F(12), text_color=MUTED)
+        self.phones_lbl.grid(row=r, column=0, sticky="w", padx=16, pady=(8, 12))
+        bx = ctk.CTkFrame(c5, fg_color="transparent")
+        bx.grid(row=r, column=1, sticky="e", padx=16, pady=(8, 12))
+        ghost_button(bx, "Test", self._test, width=70).pack(side="left", padx=(0, 6))
+        ghost_button(bx, "Remove all phones", self._clear_phones, width=140).pack(side="left")
+
+        c6 = self._card(7, "Signed-in phones", "If you lose a phone or shared the PIN, sign everyone out and "
+                        "change the PIN.")
+        ghost_button(c6, "Sign out all phones", self._signout, width=160).grid(
+            row=2, column=0, sticky="w", padx=16, pady=(4, 14))
+        self.refresh()
+
+    def _card(self, row, title, hint):
+        card = ctk.CTkFrame(self.body, fg_color=CARD, corner_radius=14, border_width=1, border_color=BORDER)
+        card.grid(row=row, column=0, sticky="ew", padx=28, pady=6)
+        card.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(card, text=title, font=F(15, "bold"), text_color=TEXT).grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=16, pady=(14, 2))
+        if hint:
+            ctk.CTkLabel(card, text=hint, font=F(12), text_color=MUTED, wraplength=600, justify="left").grid(
+                row=1, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 6 if title[0].isdigit() else 14))
+        return card
+
+    def on_show(self):
+        self.refresh()
+
+    def refresh(self):
+        has = self.r.has_pin()
+        self.pin_lbl.configure(text="A PIN is set." if has else "No PIN yet.", text_color=GOOD if has else WARN)
+        exe = remote.tailscale_exe()
+        self.ts_lbl.configure(text=("Tailscale found on this PC." if exe else
+                                    "Tailscale isn't installed on this PC yet."),
+                              text_color=GOOD if exe else WARN)
+        url = self.app.settings.get("remote_url", "")
+        self.url_lbl.configure(text=url or "No link yet: click Set up Tailscale link.")
+        run = self.r.running()
+        self.st_lbl.configure(text="Running." if run else "Off.", text_color=GOOD if run else MUTED)
+        n = len(self.r.cfg.get("subs", []))
+        self.phones_lbl.configure(text=f"{n} phone{'s' if n != 1 else ''} get notifications.")
+
+    def _save_pin(self):
+        pin = self.pin.get().strip()
+        if len(pin) < 6 or not pin.isdigit():
+            messagebox.showerror("PIN", "Use at least 6 digits (numbers only).")
+            return
+        self.r.set_pin(pin)
+        self.pin.delete(0, "end")
+        self.app.log("Phone remote: PIN changed (every phone has to sign in again).")
+        self.refresh()
+
+    def _toggle(self):
+        on = bool(self.on_var.get())
+        if on and not self.r.has_pin():
+            self.on_var.set(False)
+            messagebox.showinfo("Set a PIN first", "Save a PIN in step 2 first.")
+            return
+        self.app.settings["remote_enabled"] = on
+        save_settings(self.app.settings)
+        if on:
+            self.r.start()
+        else:
+            self.r.stop()
+        self.after(300, self.refresh)
+
+    def _setup_link(self):
+        if not self.r.has_pin():
+            messagebox.showinfo("Set a PIN first", "Save a PIN in step 2 first.")
+            return
+        if not self.r.running():
+            self.on_var.set(True)
+            self._toggle()
+        self.st_lbl.configure(text="Asking Tailscale…", text_color=WARN)
+
+        def go():
+            ok, msg = self.r.setup_tailscale(
+                status=lambda m: self.app.ui(lambda: self.st_lbl.configure(text=m, text_color=WARN)))
+
+            def done():
+                if ok:
+                    self.app.settings["remote_url"] = msg
+                    save_settings(self.app.settings)
+                    self.app.log(f"Phone remote link: {msg}")
+                    self.refresh()
+                else:
+                    self.refresh()
+                    self.st_lbl.configure(text=msg, text_color=BAD)
+            self.app.ui(done)
+        threading.Thread(target=go, daemon=True).start()
+
+    def _copy(self):
+        url = self.app.settings.get("remote_url", "")
+        if url:
+            self.clipboard_clear()
+            self.clipboard_append(url)
+            self.copy_btn.configure(text="Copied")
+            self.after(1500, lambda: self.copy_btn.configure(text="Copy link"))
+
+    def _kind(self, k, v):
+        self.app.settings[f"notify_{k}"] = bool(v.get())
+        save_settings(self.app.settings)
+
+    def _test(self):
+        if not self.r.cfg.get("subs"):
+            messagebox.showinfo("No phones yet", "Turn on notifications in the phone app first.")
+            return
+        threading.Thread(target=self.r._send_all, args=(list(self.r.cfg["subs"]), {
+            "title": "FAAR Manager", "body": "Test notification. You're all set!", "tag": "test"}),
+            daemon=True).start()
+
+    def _clear_phones(self):
+        if messagebox.askyesno("Remove all phones", "Stop sending notifications to every phone?"):
+            self.r.clear_subs()
+            self.refresh()
+
+    def _signout(self):
+        if messagebox.askyesno("Sign out all phones", "Every phone will need the PIN again. Continue?"):
+            self.r.sign_out_all()
+            self.app.log("Phone remote: signed out every phone.")
 
 
 class LogPage(ctk.CTkFrame):

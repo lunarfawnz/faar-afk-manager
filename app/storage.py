@@ -161,7 +161,7 @@ DEFAULT_SETTINGS = {
     "fit_to_screen": True,
     "monitor": 1,
     "wait_for_idle_s": 1.5,
-    "launch_gap_s": 12,
+    "launch_gap_s": 6,
 
     "rebirth_every_min": 10,
     "rebirth_popup_wait_s": 6,
@@ -176,6 +176,16 @@ DEFAULT_SETTINGS = {
     "event_check_s": 3,
     "first_slot": 2,
     "last_slot": 4,
+    "char_slots": "",
+    "hallows_end_lead_s": 4,
+    "game_fps": 60,
+    "remote_enabled": False,
+    "remote_port": 8787,
+    "remote_url": "",
+    "notify_dracula": True,
+    "notify_needs_you": True,
+    "notify_disconnects": True,
+    "notify_stopped": True,
     "mutation_cycle": True,
     "mutation_word": "dracula",
 
@@ -183,6 +193,7 @@ DEFAULT_SETTINGS = {
     "opt_low_priority": True,
     "opt_trim_min": 5,
     "rejoin_check_s": 20,
+    "rejoin_if_closed": True,
     "anti_afk_min": 14,
     "anti_afk_clicks": 10,
     "restore_user_focus": True,
@@ -219,3 +230,58 @@ def save_settings(s):
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, SETTINGS_FILE)
+
+
+HALLOWS_FILE = os.path.join(DATA_DIR, "hallows_stats.json")
+
+
+class HallowsStats:
+    def __init__(self, path=None):
+        self.path = path or HALLOWS_FILE
+        self.lock = threading.RLock()
+        self.data = {}
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                self.data = json.load(f) or {}
+        except Exception:
+            self.data = {}
+
+    def _get(self, uid):
+        return self.data.setdefault(str(uid), {"since": 0, "events": 0, "hits": 0, "last_hit": None})
+
+    def _save(self):
+        try:
+            tmp = self.path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self.data, f, indent=1)
+            os.replace(tmp, self.path)
+        except Exception:
+            pass
+
+    def event(self, uid):
+        with self.lock:
+            d = self._get(uid)
+            d["since"] += 1
+            d["events"] += 1
+            self._save()
+            return dict(d)
+
+    def hit(self, uid, when):
+        with self.lock:
+            d = self._get(uid)
+            d["since"] = 0
+            d["hits"] += 1
+            d["last_hit"] = when
+            self._save()
+            return dict(d)
+
+    def undo_event(self, uid):
+        with self.lock:
+            d = self._get(uid)
+            d["since"] = max(0, d["since"] - 1)
+            d["events"] = max(0, d["events"] - 1)
+            self._save()
+
+    def get(self, uid):
+        with self.lock:
+            return dict(self._get(uid))

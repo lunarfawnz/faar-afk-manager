@@ -11,6 +11,15 @@ sys.path.insert(0, HERE)
 
 def _crash(exc_text):
     try:
+        from app import remote
+        r = remote.CURRENT
+        if r is not None and r.s.get("notify_stopped", True) and r.cfg.get("subs"):
+            r._send_all(list(r.cfg["subs"]), {"title": "FAAR Manager crashed",
+                                              "body": exc_text.strip().splitlines()[-1][:180],
+                                              "tag": "crash", "kind": "stopped"})
+    except Exception:
+        pass
+    try:
         base = os.environ.get("LOCALAPPDATA") if sys.platform == "win32" else None
         folder = os.path.join(base, "FAAR Manager") if base else os.path.join(HERE, "data")
         os.makedirs(folder, exist_ok=True)

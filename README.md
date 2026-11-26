@@ -22,9 +22,14 @@ Hallow's Eve event, Anti-AFK and rejoining after a server shutdown.
 - **Pick what to buy**: a switch for every Boost and Selene potion, recognised by colour so it works in any
   game language. Abilities are never bought, and the character Selene sometimes sells is skipped unless you switch it on
 - **Auto ability**: presses your ability key (V by default) whenever the ability button is ready
-- **Hallow's Eve**: holds your character during the event and moves to the next one once it gets the Dracula mutation
+- **Hallow's Eve**: holds your unmutated characters one at a time during the event, skips ones that already have a
+  mutation, puts them away just before the timer ends, and keeps a count of events since your last Dracula
 - **Anti-AFK**: a little mouse movement and a few clicks every 14 minutes
-- **Auto-rejoin**: reopens an account after `Disconnected` (error 256, 277...) and closes the Welcome Back pop-up
+- **Phone remote**: control everything from your phone over Tailscale and get notifications (Dracula,
+  pop-ups that need you, disconnects, automation stopped)
+- **Auto-rejoin**: reopens an account after `Disconnected` (error 256, 277...) or if Roblox closes or crashes,
+  retries if the server isn't back yet, and closes the Welcome Back pop-up. It reads the pop-up and Roblox's
+  own log files, so it also works on small tiled windows
 - **Window layout**: tiles the alts on any monitor and maximizes the ones you don't tile
 - **Performance**: low graphics (allowlisted Fast Flags only), lower CPU priority and memory trimming for alts
 
@@ -60,13 +65,14 @@ Roblox window and it turns green by itself.
 1. Install [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki) on the PC you build on
    (or run `winget install UB-Mannheim.TesseractOCR`). Only the builder needs it.
 2. Double-click **`build_exe.bat`**. It installs [PyInstaller](https://pyinstaller.org/), packs Python,
-   every library, Tesseract and the icon into one file, and builds `dist\FAAR Manager.exe`.
+   every library, Tesseract and the icon into one file, and builds
+   `%LOCALAPPDATA%\FAAR Manager\build\dist\FAAR Manager.exe` (it opens that folder when it's done).
+   All the temporary build files go in that `build` folder too, so the project folder stays clean.
 
 Upload that one file as a GitHub release. The people downloading it need nothing else.
 
-The exe keeps its `data` folder (accounts, settings, logs) next to itself, so put it in its own
-folder rather than on the desktop. Your current `data` is copied to `dist\data` so it carries over;
-never upload that folder.
+Accounts, settings and logs live in `%LOCALAPPDATA%\FAAR Manager`, never inside the exe or the
+build output, so nothing private ends up in a release. Never upload that folder.
 
 It takes a few extra seconds to open, because a one-file exe unpacks itself first. Unsigned
 PyInstaller builds that send key presses sometimes get flagged by antivirus as a false positive; if
@@ -89,7 +95,9 @@ or the cookie stops working.
 
 ### Launch and start
 
-1. Click **Launch all**, or **Launch** on a single account.
+1. Click **Launch all**, or **Launch** on a single account. Accounts start a few seconds apart and load side
+   by side; each window is matched to its account even if they open out of order. While one is still
+   loading, its button says **Cancel** so you can skip it.
 2. Turn features on per account with the switches on its card.
 3. Press **▶ Start** in the sidebar.
 
@@ -111,10 +119,28 @@ brought forward one at a time, checked and shopped, and focus goes back to your 
 
 ### Hallow's Eve
 
-The hotbar must be full: slot 1 is the rod, your characters go from **First character slot** to
-**Last character slot**, then potions. While the event is on, the app holds the current character;
-when it shows the Dracula mutation it switches to the next slot, and after the last one it puts it
-away. It reads small text, so it works best on a full-size window.
+List your characters' hotbar slots under **Character slots** (like `2-4` or `3,4,6,9`; `0` is slot 10).
+They don't have to be next to each other, and the hotbar doesn't have to be full.
+
+When the event starts, the app holds the first character in that list that has no mutation yet,
+skipping potions and characters that already have one. When the held character gets Dracula (or the
+mutation you set), it's counted and the next unmutated character is held. If it gets a different
+mutation instead, it's swapped out straight away. When nobody is left, nothing is held.
+
+Safety checks:
+- **Before the end**: it reads the event's countdown and puts the character away 4 seconds before
+  0:00, so a last-second catch can't mutate it. The timer needs a fairly big window (about 1500 px
+  wide); on small windows the character is put away when the banner goes.
+- **Wrong event**: if two characters get mutations Hallow's Eve never gives, it assumes this is a
+  different event, stops and puts the character away.
+- **No double presses**: pressing a slot toggles it, so after each press it waits until the hotbar
+  shows the change twice in a row. Only then, or after a few seconds with no change, does it press
+  again, finishing with a long press. A character left in hand when no event is on is only put away
+  after two looks agree.
+- **Low FPS**: if you cap Roblox's FPS, set **Roblox FPS limit** so key presses last long enough.
+
+A counter is saved per account: events since the last Dracula, total events and total Draculas.
+Each event ends with a line in the log saying what happened to every character it held.
 
 ### Other languages
 
@@ -134,6 +160,28 @@ language and I'll add its event words too.
 Turn **Auto ability** on for an account, then in **Settings → Auto ability** put the mouse over the ability button
 in a Roblox window and click **Mark ability button** (keep the mouse there for 5 seconds). From then on it presses
 the key only when the button is green (ready), and never while a shop or pop-up is open.
+
+### Phone remote
+
+Watch and control FAAR Manager from your phone, and get notifications. Open **📱 Phone remote** in the app
+and follow the 4 steps:
+
+1. Install [Tailscale](https://tailscale.com) (free) on this PC and on your phone, signed in to the same account.
+2. Set a PIN (at least 6 digits).
+3. Turn the remote on and click **Set up Tailscale link**. The first time, Tailscale may ask you in the browser
+   to allow HTTPS for your network. You get a link like `https://your-pc.your-network.ts.net`.
+4. On your phone (with Tailscale on) open the link, add it to your home screen (iPhone: Share → Add to Home
+   Screen; Android: ⋮ → Install app), open it from there, type the PIN and tap **Turn on** under Notifications.
+
+From the phone you can start, pause and stop automation; launch, close and rejoin accounts; flip each
+account's switches; look at a screenshot of any Roblox window; see the Hallow's Eve counter; and read the
+activity log. Notifications (each can be switched off): Dracula got, needs you (SACRIFICE pop-up, a stuck
+Robux pop-up, rejoins failed or stopped), disconnects and rejoins, and automation stopped or the app crashed.
+
+Safety: the remote only listens on this PC and is shared through your own Tailscale network, so it's never
+open to the internet. Every phone needs the PIN, 5 wrong PINs lock logins for 5 minutes, and you can sign
+out every phone from the PC. Roblox logins (cookies) are never sent to the phone. iPhone needs iOS 16.4 or
+newer for notifications, and they only work from the home-screen app.
 
 ### Checking what the app sees
 
@@ -219,6 +267,10 @@ app/
   ability.py              auto ability (is the ability button ready?)
   purchase.py             Robux pop-up detection
   roblox.py               sign-in and launching
+  rlogs.py                reads Roblox's log files to spot disconnects
+  remote.py               phone remote (web server, PIN sign-in, notifications)
+  webpush.py              sends notifications to phones
+  web/                    the phone app
   route.py                after-rejoin handling
   optimize.py             performance settings
   storage.py              accounts and settings
