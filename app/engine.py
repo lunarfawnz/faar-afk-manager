@@ -1,4 +1,5 @@
 import math
+import gc
 import random
 import threading
 import time
@@ -11,6 +12,13 @@ from . import win, purchase, builtin, hallows, route, roblox, ability, items, rl
 
 CLICK_HOLD = 0.12
 KEY_HOLD = 0.15
+
+
+def _low_memory(e):
+    if isinstance(e, MemoryError):
+        return True
+    text = str(e)
+    return "Insufficient memory" in text or "OutOfMemory" in text or "Failed to allocate" in text
 
 
 class Abort(Exception):
@@ -194,6 +202,12 @@ class Engine:
             except Abort:
                 pass
             except Exception as e:
+                if _low_memory(e):
+                    self._memory_trouble()
+                    time.sleep(5)
+                    continue
+                if not (acc.hwnd and win.is_window(acc.hwnd)):
+                    continue
                 st.err_n += 1
                 self.log(f"Error: {e}", acc, "error")
                 if st.err_n >= 5:
@@ -203,6 +217,26 @@ class Engine:
                              acc, "warn")
                 time.sleep(1)
         time.sleep(0.25)
+
+    def _memory_trouble(self):
+        gc.collect()
+        now = time.time()
+        if now < getattr(self, "_mem_warned", 0):
+            return
+        self._mem_warned = now + 600
+        mine = ""
+        try:
+            import psutil
+            vm = psutil.virtual_memory()
+            me = psutil.Process().memory_info().rss / 2 ** 20
+            mine = (f" Free RAM: {vm.available / 2 ** 30:.1f} GB of {vm.total / 2 ** 30:.1f} GB; "
+                    f"FAAR Manager itself is using {me:.0f} MB.")
+        except Exception:
+            pass
+        self.log("Your PC ran out of memory (RAM), so a screenshot couldn't be taken. Roblox windows may crash "
+                 "when this happens. Close other programs, run fewer accounts, or turn on Low graphics and "
+                 "Trim memory in Settings." + mine, None, "error")
+        self.notify("needs_you", "PC out of memory", "Your PC ran out of RAM. Roblox windows may crash.")
 
     def _new_state(self, s):
         now = time.time()

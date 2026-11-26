@@ -170,6 +170,7 @@ class Pending:
         self.t = time.time()
         self.got = None
         self.pid = None
+        self.adopted = False
         self.done = False
 
 
@@ -217,6 +218,7 @@ def start(account, place_id, link_code=None):
 
 
 _ctime = {}
+ORPHAN_AFTER = 15
 
 
 def _created(pid):
@@ -259,6 +261,21 @@ def _poll(known_pids=()):
             if p.pid is not None and p.pid in wins:
                 p.got = (p.pid, wins[p.pid])
                 _claimed.add(p.pid)
+        now = time.time()
+        for p in sorted(live, key=lambda x: x.t):
+            if p.got or p.pid is not None or now - p.t < ORPHAN_AFTER:
+                continue
+            busy = set(_claimed) | set(known_pids) | {o.pid for o in _pending if o is not p and o.pid}
+            plain = [pid for pid in wins if pid not in busy
+                     and not (cmds.get(pid) and any(tr in cmds[pid] for tr in _trackers if tr != p.tracker))
+                     and win.window_title(wins[pid]).strip().lower() == "roblox"]
+            if not plain:
+                continue
+            fresh = [pid for pid in plain if pid not in p.before]
+            pid = min(fresh or plain, key=_created)
+            p.pid, p.got = pid, (pid, wins[pid])
+            p.adopted = pid in p.before
+            _claimed.add(pid)
 
 
 def wait_window(p, wait_s=100, status=lambda s: None, cancelled=lambda: False, known_pids=lambda: ()):

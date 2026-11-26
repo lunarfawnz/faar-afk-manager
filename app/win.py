@@ -560,7 +560,7 @@ def _dib_to_array(hdc_mem, hbmp, w, h):
 def capture_window(hwnd):
     _require()
     _, _, w, h = client_rect(hwnd)
-    if w <= 0 or h <= 0:
+    if w < 200 or h < 120 or user32.IsIconic(hwnd):
         return None
     img = None
     hdc_win = user32.GetDC(hwnd)
@@ -576,7 +576,10 @@ def capture_window(hwnd):
         gdi32.DeleteDC(hdc_mem)
         user32.ReleaseDC(hwnd, hdc_win)
     if img is None or img.mean() < 2:
-        img = capture_screen_rect(*client_rect(hwnd))
+        x, y, w2, h2 = client_rect(hwnd)
+        if w2 < 200 or h2 < 120:
+            return None
+        img = capture_screen_rect(x, y, w2, h2)
     return img
 
 

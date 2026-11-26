@@ -567,7 +567,11 @@ class App(ctk.CTk):
                 if got:
                     a.pid, a.hwnd = got
                     a.status = "In game"
-                    self.log("Roblox window opened.", a)
+                    if getattr(p, "adopted", False):
+                        self.log("Took over a Roblox window that wasn't linked to any account. If it's the "
+                                 "wrong account, close it with Close and launch again.", a, "warn")
+                    else:
+                        self.log("Roblox window opened.", a)
                     self._arrange_soon()
                 elif job["cancel"]:
                     a.status = "Offline"

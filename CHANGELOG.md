@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.3.1
+
+### Fixes
+- **Windows not being picked up.** If an account has waited 15 seconds and no Roblox of its own has started, it now takes over an open Roblox window that isn't linked to any account (for example one left over from an earlier launch) instead of sitting on "Waiting for window".
+- **Running out of RAM.** If your PC runs out of memory, FAAR Manager now says so in one clear log line (showing free RAM and how much FAAR itself is using), sends a "PC out of memory" phone notification, and keeps going instead of flooding the log with errors.
+- **Closing or minimised windows** no longer cause "Assertion failed" errors, and an account whose window is gone isn't counted as failing and rested.
+
 ## v1.3.0
 
 ### Phone remote (new)
