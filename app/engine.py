@@ -14,6 +14,14 @@ CLICK_HOLD = 0.12
 KEY_HOLD = 0.15
 
 
+def free_ram_mb():
+    try:
+        import psutil
+        return psutil.virtual_memory().available / 2 ** 20
+    except Exception:
+        return None
+
+
 def _low_memory(e):
     if isinstance(e, MemoryError):
         return True
@@ -93,6 +101,9 @@ class Engine:
         self.notify = lambda kind, title, body, acc=None: None
         self.remote_stop = False
         self.user_closing = False
+        self.next_ram_check = 0.0
+        self.ram_low_n = 0
+        self.ram_restart_at = 0.0
         self.input_lock = win.InputLock()
         self.relaunch = None
         self.logwatch = rlogs.Watcher()
@@ -179,6 +190,12 @@ class Engine:
             time.sleep(0.2)
             return
         s = self.get_settings()
+        if time.time() >= self.next_ram_check:
+            self.next_ram_check = time.time() + 20
+            try:
+                self._ram_guard(s)
+            except Exception:
+                pass
         if self.selene_queue:
             ok = {a.user_id for a in self.get_accounts() if a.hwnd and win.is_window(a.hwnd)
                   and not getattr(self.states.get(a.user_id), "hold", "")}
@@ -218,6 +235,43 @@ class Engine:
                 time.sleep(1)
         time.sleep(0.25)
 
+    def _ram_guard(self, s):
+        limit = float(s.get("ram_restart_mb", 1000) or 0)
+        if limit <= 0 or not s.get("low_ram_restart", False):
+            return
+        import psutil
+        free = psutil.virtual_memory().available / 2 ** 20
+        if free >= limit:
+            self.ram_low_n = 0
+            return
+        self.ram_low_n += 1
+        if self.ram_low_n < 2 or time.time() < self.ram_restart_at:
+            return
+        best, used = None, 0.0
+        for acc in self.get_accounts():
+            st = self.states.get(acc.user_id)
+            if not (acc.hwnd and acc.pid and win.is_window(acc.hwnd)) or st is None or st.hold:
+                continue
+            if self.selene_busy == acc.user_id:
+                continue
+            try:
+                info = psutil.Process(acc.pid).memory_info()
+                mb = getattr(info, "private", info.rss) / 2 ** 20
+            except Exception:
+                continue
+            if mb > used:
+                best, used = acc, mb
+        if best is None:
+            return
+        self.ram_low_n = 0
+        self.ram_restart_at = time.time() + 180
+        st = self.states[best.user_id]
+        self.log(f"Free RAM is low ({free:.0f} MB, limit {limit:.0f} MB). Restarting this Roblox to free memory "
+                 f"(it's using {used:.0f} MB).", best, "warn")
+        self.notify("needs_you", "Low RAM: restarting a Roblox",
+                    f"Only {free:.0f} MB free, so this Roblox ({used:.0f} MB) is being restarted.", best)
+        self._start_rejoin(best, st, s, "low RAM", quiet=True)
+
     def _memory_trouble(self):
         gc.collect()
         now = time.time()
@@ -233,9 +287,14 @@ class Engine:
                     f"FAAR Manager itself is using {me:.0f} MB.")
         except Exception:
             pass
+        auto = bool(self.get_settings().get("low_ram_restart", False))
         self.log("Your PC ran out of memory (RAM), so a screenshot couldn't be taken. Roblox windows may crash "
-                 "when this happens. Close other programs, run fewer accounts, or turn on Low graphics and "
-                 "Trim memory in Settings." + mine, None, "error")
+                 "when this happens" + ("; the biggest one will be restarted to free memory. " if auto else
+                                         ". Turn on 'Restart Roblox when the PC runs low on RAM' in Settings to "
+                                         "let FAAR restart the biggest one. ")
+                 + "Close other programs or run fewer accounts if it keeps happening." + mine, None, "error")
+        self.next_ram_check = 0
+        self.ram_low_n = max(self.ram_low_n, 1)
         self.notify("needs_you", "PC out of memory", "Your PC ran out of RAM. Roblox windows may crash.")
 
     def _new_state(self, s):
@@ -298,7 +357,7 @@ class Engine:
         self.rejoin_times[acc.user_id] = times
         return True
 
-    def _start_rejoin(self, acc, st, s, why):
+    def _start_rejoin(self, acc, st, s, why, quiet=False):
         if not self._rejoin_allowed(acc):
             st.hold = "rejoin-stopped"
             st.next_hold_check = time.time() + 1e9
@@ -310,7 +369,9 @@ class Engine:
             return
         st.hold = "rejoin"
         acc.status = f"Rejoining ({why})"
-        if why.startswith("the Roblox window"):
+        if quiet:
+            pass
+        elif why.startswith("the Roblox window"):
             self.log("Roblox closed by itself. Rejoining.", acc, "warn")
             self.notify("disconnects", "Roblox closed", "Roblox closed by itself. Rejoining.", acc)
         else:
@@ -335,6 +396,15 @@ class Engine:
                 acc.hwnd, acc.pid = 0, 0
                 if not self._sleep(5):
                     return
+                need = float(s.get("ram_restart_mb", 1000) or 0)
+                waited = 0
+                while need > 0 and waited < 120 and (free_ram_mb() or need) < need:
+                    if waited == 0:
+                        acc.status = "Waiting for free RAM"
+                        self.log(f"Waiting for at least {need:.0f} MB of free RAM before reopening Roblox.", acc)
+                    if not self._sleep(5):
+                        return
+                    waited += 5
                 if not self.relaunch:
                     self.log("Can't rejoin from here (no launcher).", acc, "error")
                     return

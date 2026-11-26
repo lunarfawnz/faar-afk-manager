@@ -106,6 +106,8 @@ class App(ctk.CTk):
         self.engine.relaunch = self.relaunch_blocking
         self.remote = remote.Remote(self)
         self.engine.notify = self.remote.notify
+        roblox.IDENTIFY = self.engine.logwatch.user_for_pid
+        threading.Thread(target=self._linker, daemon=True).start()
         self._lowered, self._prio_warned, self._next_trim = set(), set(), time.time() + 120
         self._past_taskbar_warned = {}
         self._maxed, self._seen, self._maxing = set(), {}, False
@@ -298,6 +300,18 @@ class App(ctk.CTk):
             if got:
                 lock.release()
             self._maxing = False
+
+    def _linker(self):
+        while True:
+            time.sleep(5)
+            if not win.IS_WIN:
+                continue
+            try:
+                for a in roblox.link_unclaimed(self.accounts, set(self.launching)):
+                    self.log("Found this account's Roblox window and linked it.", a)
+                    self._arrange_soon()
+            except Exception:
+                pass
 
     def _tick(self):
         if "accounts" in self.pages:
@@ -562,8 +576,10 @@ class App(ctk.CTk):
 
         def wait_for(a, job, p):
             try:
-                got = roblox.wait_window(p, 100, status=lambda t: setattr(a, "status", t),
+                got = roblox.wait_window(p, 300, status=lambda t: setattr(a, "status", t),
                                          cancelled=lambda: job["cancel"], known_pids=self._known_pids)
+                if job["cancel"] == "linked":
+                    return
                 if got:
                     a.pid, a.hwnd = got
                     a.status = "In game"
@@ -578,7 +594,10 @@ class App(ctk.CTk):
                     self.log("Launch cancelled.", a)
                 else:
                     a.status = "Failed"
-                    self.log("Roblox didn't open a window in time. Click Launch to try again.", a, "error")
+                    seen = roblox.describe_windows({x.pid: x.username for x in self.accounts if x.pid and x.hwnd})
+                    self.log("No Roblox window could be matched to this account in 5 minutes. If its window is "
+                             "open, use ⋯ → Link an open Roblox window. Roblox windows FAAR can see: " + seen,
+                             a, "error")
             finally:
                 self.launching.pop(a.user_id, None)
 
@@ -861,6 +880,7 @@ class AccountCard(ctk.CTkFrame):
     def _menu(self):
         m = tk.Menu(self, tearoff=0, bg=CARD, fg=TEXT, activebackground=ACCENT, bd=0)
         m.add_command(label="Test detection (what the app sees)", command=lambda: test_detection(self.app, self.acc))
+        m.add_command(label="Link an open Roblox window", command=lambda: LinkWindowDialog(self.app, self.acc))
         m.add_command(label="Update cookie", command=lambda: AddAccountDialog(self.app, self.page))
         m.add_separator()
         m.add_command(label="Remove account", command=self._remove)
@@ -871,6 +891,65 @@ class AccountCard(ctk.CTkFrame):
             self.app.accounts.remove(self.acc)
             self.app.save()
             self.page.rebuild()
+
+
+class LinkWindowDialog(ctk.CTkToplevel):
+    def __init__(self, app, acc):
+        super().__init__(app)
+        self.app, self.acc = app, acc
+        self.title(f"Link a window to {acc.username}")
+        self.geometry("560x420")
+        self.configure(fg_color=BG)
+        self.transient(app)
+        ctk.CTkLabel(self, text=f"Which Roblox window is {acc.username}?", font=F(17, "bold"),
+                     text_color=TEXT).pack(anchor="w", padx=20, pady=(18, 2))
+        ctk.CTkLabel(self, text="Click Show to bring a window to the front and check it's the right account, "
+                     "then Link.", font=F(12), text_color=MUTED, wraplength=520, justify="left").pack(
+            anchor="w", padx=20, pady=(0, 10))
+        self.box = ctk.CTkScrollableFrame(self, fg_color=PANEL, corner_radius=12)
+        self.box.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+        bar = ctk.CTkFrame(self, fg_color="transparent")
+        bar.pack(fill="x", padx=20, pady=(0, 16))
+        ghost_button(bar, "Refresh", self._fill, width=90).pack(side="left")
+        ghost_button(bar, "Close", self.destroy, width=90).pack(side="right")
+        self._fill()
+        self.after(150, self.lift)
+
+    def _fill(self):
+        for w in self.box.winfo_children():
+            w.destroy()
+        known = {a.pid: a.username for a in self.app.accounts if a.pid and a.hwnd and win.is_window(a.hwnd)}
+        rows = roblox.all_windows(known.keys()) if win.IS_WIN else []
+        if not rows:
+            ctk.CTkLabel(self.box, text="No Roblox windows found.", font=F(13), text_color=MUTED).pack(pady=20)
+            return
+        for r in rows:
+            row = ctk.CTkFrame(self.box, fg_color=CARD, corner_radius=10)
+            row.pack(fill="x", padx=6, pady=4)
+            owner = known.get(r["pid"])
+            info = f"{r['title']}\n{r['exe']} · {r['size'][0]}×{r['size'][1]}" + (f" · linked to {owner}" if owner else "")
+            ctk.CTkLabel(row, text=info, font=F(12), text_color=MUTED if owner else TEXT, justify="left").pack(
+                side="left", padx=12, pady=8)
+            pill_button(row, "Link", lambda r=r: self._link(r), width=70).pack(side="right", padx=(4, 10))
+            ghost_button(row, "Show", lambda r=r: threading.Thread(target=win.focus, args=(r["hwnd"],),
+                                                                     daemon=True).start(), width=70).pack(side="right")
+
+    def _link(self, r):
+        for a in self.app.accounts:
+            if a is not self.acc and a.pid == r["pid"]:
+                if not messagebox.askyesno("Already linked", f"That window is linked to {a.username}. Move it to "
+                                           f"{self.acc.username}?", parent=self):
+                    return
+                a.pid, a.hwnd, a.status = 0, 0, "Offline"
+        job = self.app.launching.get(self.acc.user_id)
+        if job is not None:
+            job["cancel"] = "linked"
+            self.app.launching.pop(self.acc.user_id, None)
+        roblox.link(self.acc, r["pid"], r["hwnd"])
+        self.acc.status = "In game"
+        self.app.log(f"Linked to the Roblox window you picked (pid {r['pid']}).", self.acc)
+        self.app._arrange_soon()
+        self.destroy()
 
 
 class AddAccountDialog(ctk.CTkToplevel):
@@ -1046,6 +1125,12 @@ SETTINGS_FORM = [
          "With Rejoin on, a disconnected account (server shut down, error 256/277...) is closed and "
          "launched again, and the Welcome Back pop-up is closed so it keeps fishing. It reads the pop-up "
          "and Roblox's own log files, so it works on small windows too. 0 = off."),
+        ("low_ram_restart", "Restart Roblox when the PC runs low on RAM", bool,
+         "Off by default. When free RAM stays under the amount below, the Roblox using the most memory is "
+         "closed and launched again (at most one every 3 minutes). Only turn it on if your PC runs out of RAM "
+         "and Roblox crashes."),
+        ("ram_restart_mb", "Low RAM means less than this much free (MB)", float,
+         "Used by the switch above. Rejoins also wait (up to 2 minutes) until this much RAM is free."),
         ("rejoin_if_closed", "Also rejoin if Roblox closes or crashes", bool,
          "With Rejoin on, an account whose Roblox window closes by itself is launched again. Use the "
          "Close button in this app to close an account for good."),

@@ -76,6 +76,7 @@ class Watcher:
                 paths = glob.glob(os.path.join(self.folder, "*.log"))
             except Exception:
                 return
+            paths = [os.path.normcase(p) for p in paths]
             for p in paths:
                 try:
                     st = os.stat(p)
@@ -107,6 +108,42 @@ class Watcher:
             for p in list(self.files):
                 if p not in paths:
                     self.files.pop(p, None)
+
+    def user_for_pid(self, pid):
+        import psutil
+        self.poll()
+        try:
+            pr = psutil.Process(pid)
+        except Exception:
+            return None
+        try:
+            for f in pr.open_files():
+                path = os.path.normcase(f.path)
+                if path.endswith(".log"):
+                    with self.lock:
+                        got = self.files.get(path)
+                    if got is not None and got.user:
+                        return got.user
+        except Exception:
+            pass
+        try:
+            started = pr.create_time()
+        except Exception:
+            return None
+        best, best_d = None, 99.0
+        with self.lock:
+            items = list(self.files.items())
+        for path, f in items:
+            if not f.user:
+                continue
+            try:
+                made = os.stat(path).st_ctime
+            except OSError:
+                continue
+            d = made - started
+            if -2 <= d <= 15 and abs(d) < best_d:
+                best, best_d = f.user, abs(d)
+        return best
 
     def latest(self, user_id):
         self.poll()

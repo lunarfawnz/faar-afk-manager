@@ -219,6 +219,16 @@ def start(account, place_id, link_code=None):
 
 _ctime = {}
 ORPHAN_AFTER = 15
+IDENTIFY = None
+
+
+def _who(pid):
+    if IDENTIFY is None:
+        return None
+    try:
+        return IDENTIFY(pid)
+    except Exception:
+        return None
 
 
 def _created(pid):
@@ -257,6 +267,19 @@ def _poll(known_pids=()):
                 p.pid = pid
                 taken.add(pid)
         wins = win.roblox_windows(any_title=True)
+        for pid in wins:
+            if pid in taken and not any(o.pid == pid for o in live):
+                continue
+            uid = _who(pid)
+            if uid is None:
+                continue
+            for p in live:
+                if p.account.user_id == uid and p.pid != pid:
+                    for o in live:
+                        if o is not p and o.pid == pid:
+                            o.pid = None
+                    p.pid = pid
+                    taken.add(pid)
         for p in live:
             if p.pid is not None and p.pid in wins:
                 p.got = (p.pid, wins[p.pid])
@@ -283,9 +306,11 @@ def wait_window(p, wait_s=100, status=lambda s: None, cancelled=lambda: False, k
     extended = False
     try:
         while True:
-            if cancelled():
-                for pid in _pids_with_tracker(p.tracker):
-                    _kill(pid)
+            why = cancelled()
+            if why:
+                if why != "linked":
+                    for pid in _pids_with_tracker(p.tracker):
+                        _kill(pid)
                 return None
             _poll(known_pids())
             if p.got:
@@ -377,6 +402,33 @@ def close(account, wait_s=10):
     psutil.wait_procs(alive, timeout=5)
 
 
+def link_unclaimed(accounts, busy_ids=()):
+    if not win.IS_WIN:
+        return []
+    with _plock:
+        pending_pids = {p.pid for p in _pending if p.pid}
+    linked = {a.pid for a in accounts if a.pid and a.hwnd and win.is_window(a.hwnd)}
+    out = []
+    for pid, hwnd in win.roblox_windows(any_title=True).items():
+        if pid in linked or pid in pending_pids:
+            continue
+        title = win.window_title(hwnd)
+        named = next((a for a in accounts if title == f"Roblox - {a.username}"), None)
+        uid = named.user_id if named else _who(pid)
+        if uid is None:
+            continue
+        acc = next((a for a in accounts if a.user_id == uid), None)
+        if acc is None or acc.user_id in busy_ids or (acc.hwnd and win.is_window(acc.hwnd)):
+            continue
+        acc.pid, acc.hwnd, acc.status = pid, hwnd, "In game"
+        win.set_title(hwnd, f"Roblox - {acc.username}")
+        with _plock:
+            _claimed.add(pid)
+        linked.add(pid)
+        out.append(acc)
+    return out
+
+
 def reattach(accounts):
     if not win.IS_WIN:
         return
@@ -386,3 +438,44 @@ def reattach(accounts):
         for a in accounts:
             if title == f"Roblox - {a.username}" and not a.hwnd:
                 a.pid, a.hwnd, a.status = pid, hwnd, "In game"
+
+
+def all_windows(known_pids=()):
+    import psutil
+    out = []
+    names = {}
+    for pr in psutil.process_iter(["name"]):
+        try:
+            n = (pr.info["name"] or "")
+            if "roblox" in n.lower() and "crash" not in n.lower() and "studio" not in n.lower():
+                names[pr.pid] = n
+        except Exception:
+            pass
+    for hwnd, pid, title in win.top_windows():
+        if pid not in names or "roblox" not in title.lower():
+            continue
+        try:
+            _, _, w, h = win.client_rect(hwnd)
+        except Exception:
+            w = h = 0
+        if w < 200 or h < 120:
+            continue
+        out.append({"pid": pid, "hwnd": hwnd, "title": title, "exe": names[pid], "size": (w, h),
+                    "linked": pid in set(known_pids)})
+    return out
+
+
+def describe_windows(known):
+    rows = []
+    for w in all_windows(known.keys()):
+        owner = known.get(w["pid"])
+        rows.append(f"'{w['title']}' ({w['exe']}, pid {w['pid']}, {w['size'][0]}x{w['size'][1]}"
+                    + (f", linked to {owner})" if owner else ", not linked)"))
+    return "; ".join(rows) or "none"
+
+
+def link(account, pid, hwnd):
+    with _plock:
+        _claimed.add(pid)
+    win.set_title(hwnd, f"Roblox - {account.username}")
+    account.pid, account.hwnd = pid, hwnd

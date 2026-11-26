@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.3.2
+
+### Launching
+- **Windows are now matched by the account that's actually logged in.** FAAR reads Roblox's own log file for each window to see which account it is, and links it automatically, even if the launch already timed out or you opened Roblox yourself. Checked every 5 seconds.
+- **New: Link an open Roblox window.** If an account doesn't pick up its window, open its ⋯ menu → **Link an open Roblox window**, click **Show** to check which window is which, then **Link**.
+- Waits up to 5 minutes for a slow window instead of 100 seconds (you can still Cancel), and keeps launching the other accounts meanwhile.
+- If no window can be matched, the log now lists every Roblox window FAAR can see, to help track down why.
+
+### Low RAM
+- **New (off by default): restart a Roblox before your PC runs out of memory.** Turn on **Restart Roblox when the PC runs low on RAM** in Settings. When free RAM stays below the limit (1000 MB by default), the Roblox using the most memory is closed and launched again (at most one every 3 minutes). With it on, if memory does run out, the biggest Roblox is restarted straight away.
+- Rejoins now wait (up to 2 minutes) for enough free RAM before reopening Roblox, so a crash from low memory doesn't turn into another crash.
+
 ## v1.3.1
 
 ### Fixes
