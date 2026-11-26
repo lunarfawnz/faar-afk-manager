@@ -1,0 +1,60 @@
+name: Announce release on Discord
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  announce:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post the release notes to Discord
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          ROLE_ID: ${{ secrets.DISCORD_ROLE_ID }}
+          TAG: ${{ github.event.release.tag_name }}
+          NAME: ${{ github.event.release.name }}
+          URL: ${{ github.event.release.html_url }}
+          BODY: ${{ github.event.release.body }}
+        run: |
+          python3 - <<'PY'
+          import json, os, time, urllib.request
+
+          webhook = os.environ["WEBHOOK"]
+          role = os.environ.get("ROLE_ID", "").strip()
+          tag = os.environ["TAG"]
+          title = os.environ.get("NAME") or tag
+          url = os.environ["URL"]
+          body = (os.environ.get("BODY") or "No notes.").replace("\r\n", "\n").strip()
+
+          chunks, cur = [], ""
+          for line in body.split("\n"):
+              while len(line) > 3900:
+                  chunks.append(cur); cur = ""
+                  chunks.append(line[:3900]); line = line[3900:]
+              if len(cur) + len(line) + 1 > 3900:
+                  chunks.append(cur); cur = ""
+              cur += line + "\n"
+          chunks = [c.strip() for c in chunks + [cur] if c.strip()]
+
+          def post(payload):
+              req = urllib.request.Request(webhook, data=json.dumps(payload).encode(),
+                                           headers={"Content-Type": "application/json",
+                                                    "User-Agent": "faar-release-bot"})
+              urllib.request.urlopen(req).read()
+              time.sleep(1)
+
+          ping = f"<@&{role}> " if role else ""
+          head = (f"{ping}**FAAR Manager {tag} is out!**\n"
+                  "Open FAAR Manager and click the green **Update** button in the sidebar to update "
+                  f"(or download it here: {url}).")
+          for i, chunk in enumerate(chunks):
+              payload = {
+                  "embeds": [{"title": title if i == 0 else f"{title} (continued)",
+                              "url": url, "description": chunk, "color": 0x7C5CFF}],
+                  "allowed_mentions": {"roles": [role] if role and i == 0 else []},
+              }
+              if i == 0:
+                  payload["content"] = head
+              post(payload)
+          PY
