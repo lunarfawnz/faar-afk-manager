@@ -1,10 +1,11 @@
 import time
 
-from . import win, builtin, purchase
+from . import win, builtin, purchase, popups
 
 
 def game_loaded(img):
-    return img is not None and (builtin.shops_button(img) is not None or builtin.welcome_back(img))
+    return img is not None and (builtin.shops_button(img) is not None or builtin.welcome_back(img)
+                                or popups.income_slots(img) >= 3)
 
 
 def wait_loaded(hwnd, timeout=120, stop=lambda: False):
@@ -26,6 +27,12 @@ def close_welcome_back(ctx, timeout=30):
         if purchase.is_open(img):
             if not ctx.dismiss_purchase():
                 return False
+            continue
+        xy = popups.join_event_x(img)
+        if xy:
+            ctx.log("Closing the Join Event pop-up (with its X).")
+            ctx.click(*xy)
+            ctx.wait(1.5)
             continue
         if builtin.welcome_back(img):
             x = builtin.close_x(img)

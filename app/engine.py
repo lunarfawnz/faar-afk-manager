@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from . import win, purchase, builtin, hallows, route, roblox, ability, items, rlogs, storage
+from . import win, purchase, builtin, hallows, route, roblox, ability, items, rlogs, storage, popups, money
 
 
 CLICK_HOLD = 0.12
@@ -20,6 +20,22 @@ def free_ram_mb():
         return psutil.virtual_memory().available / 2 ** 20
     except Exception:
         return None
+
+
+PRESS_SETTLE = 6.0
+SELENE_STAY = 300
+SELENE_LAST_START = 250
+SELENE_EARLY = 10
+
+
+def selene_in_town(now=None):
+    tm = time.gmtime(now if now is not None else time.time())
+    secs = (tm.tm_min % 30) * 60 + tm.tm_sec
+    if secs >= 30 * 60 - SELENE_EARLY:
+        secs -= 30 * 60
+    if secs >= SELENE_STAY:
+        return None
+    return secs, secs <= SELENE_LAST_START
 
 
 def _low_memory(e):
@@ -45,8 +61,16 @@ class AccState:
     selene_until: float = 0
     next_event: float = 0
     last_input: float = field(default_factory=time.time)
+    ability_seen: float = 0.0
     event_on: bool = False
     ev_votes: int = 0
+    ev_name: str = ""
+    ev_seen: str = ""
+    ev_name_votes: int = 0
+    stray_block: dict = field(default_factory=dict)
+    next_stray: float = 0
+    last_press: float = 0
+    rebirth_cost: object = None
     cur_slot: int = 0
     done: bool = False
     drac_votes: int = 0
@@ -59,6 +83,7 @@ class AccState:
     disabled: set = field(default_factory=set)
     hold: str = ""
     next_popup_check: float = 0
+    next_other_popup: float = 0
     next_sacpop_check: float = 0
     next_hold_check: float = 0
     next_disc_check: float = 0
@@ -75,6 +100,7 @@ class AccState:
     next_timer: float = 0
     end_at: float = 0
     end_reads: list = field(default_factory=list)
+    ev_start: float = 0.0
     pending_return: bool = False
     next_ability: float = 0
     ability_presses: int = 0
@@ -106,6 +132,7 @@ class Engine:
         self.ram_restart_at = 0.0
         self.input_lock = win.InputLock()
         self.relaunch = None
+        self.press_times = []
         self.logwatch = rlogs.Watcher()
         self.hstats = storage.HallowsStats()
         self.rejoin_times = {}
@@ -190,6 +217,7 @@ class Engine:
             time.sleep(0.2)
             return
         s = self.get_settings()
+        self._restart_check(s)
         if time.time() >= self.next_ram_check:
             self.next_ram_check = time.time() + 20
             try:
@@ -271,6 +299,33 @@ class Engine:
         self.notify("needs_you", "Low RAM: restarting a Roblox",
                     f"Only {free:.0f} MB free, so this Roblox ({used:.0f} MB) is being restarted.", best)
         self._start_rejoin(best, st, s, "low RAM", quiet=True)
+
+    def _restart_check(self, s):
+        now = time.time()
+        if now < getattr(self, "_next_restart_check", 0):
+            return
+        self._next_restart_check = now + 30
+        hours = float(s.get("restart_every_h", 0) or 0)
+        if hours <= 0 or now < getattr(self, "_last_sched_restart", 0) + 120:
+            return
+        if self.selene_queue or self.selene_busy is not None:
+            return
+        due = []
+        for a in self.get_accounts():
+            st = self.states.get(a.user_id)
+            if st is None or not (a.hwnd and win.is_window(a.hwnd)):
+                continue
+            if st.hold or st.event_on or (a.features.get("selene") and selene_in_town(now)):
+                continue
+            if now - st.born >= hours * 3600:
+                due.append((st.born, a, st))
+        if not due:
+            return
+        due.sort(key=lambda x: x[0])
+        _, acc, st = due[0]
+        self._last_sched_restart = now
+        self.log(f"Scheduled restart (every {hours:g} h) to free memory.", acc)
+        self._start_rejoin(acc, st, s, "scheduled restart", quiet=True)
 
     def _memory_trouble(self):
         gc.collect()
@@ -560,6 +615,14 @@ class Engine:
             img = shot()
             if img is not None and purchase.is_open(img):
                 return [("close_purchase",)]
+            if img is not None and now >= st.next_other_popup:
+                st.next_other_popup = now + 6
+                xy = popups.join_event_x(img)
+                if xy:
+                    return [("popup", "join", xy)]
+                xy = popups.daily_claim(img)
+                if xy:
+                    return [("popup", "daily", xy)]
 
         if f.get("rebirth") and "rebirth" not in st.disabled and now >= st.next_rebirth:
             st.next_rebirth = now + max(1, float(s["rebirth_every_min"])) * 60
@@ -569,7 +632,8 @@ class Engine:
             st.next_boost = self._next_boost(now, s)
             jobs.append(("boost",))
 
-        if now >= st.next_selene and now >= st.selene_until and not self.selene_queue:
+        town = selene_in_town(now) if s.get("selene_clock", True) else (0, True)
+        if now >= st.next_selene and now >= st.selene_until and not self.selene_queue and town and town[1]:
             st.next_selene = now + max(1, float(s["selene_check_s"]))
             if f.get("selene") or self._selene_round_wanted(acc):
                 img = shot()
@@ -582,8 +646,12 @@ class Engine:
                         st.selene_until = now + float(s["selene_cooldown_min"]) * 60
         if self.selene_busy is not None and now - self.selene_busy_since > 360:
             self.selene_busy = None
+        can_start = bool(town and town[1])
+        if self.selene_queue and not can_start and self.selene_busy is None:
+            self.log("Selene is about to leave, so the rest of this round is skipped.", acc)
+            self.selene_queue = []
         if (self.selene_queue and self.selene_queue[0] == acc.user_id and self.selene_busy is None
-                and not jobs):
+                and not jobs and can_start):
             self.selene_busy_since = now
             self.selene_busy = acc.user_id
             jobs.append(("selene_turn",))
@@ -597,6 +665,12 @@ class Engine:
                 img = shot()
                 if img is not None:
                     jobs += self._hallows_decide(acc, st, s, img)
+        elif (f.get("hallows_eve") and now >= st.backoff_until and now >= st.next_stray
+              and not (st.event_on and not st.done and not st.ending)):
+            st.next_stray = now + 1
+            img = shot()
+            if img is not None:
+                jobs += self._stray_check(acc, st, s, img)
 
         if (f.get("ability") and "ability" not in st.disabled and not jobs and now >= st.next_ability
                 and self.selene_busy != acc.user_id):
@@ -610,7 +684,9 @@ class Engine:
     def _hallows_decide(self, acc, st, s, img):
         slots = char_slots(s)
         word = str(s.get("mutation_word", "dracula") or "dracula").strip().lower()
-        reading, why = hallows.hallows_event_cached(img, st.hcache)
+        name, why = hallows.event_cached(img, st.hcache)
+        self._track_event(acc, st, name)
+        reading = name == "hallows"
         if reading != st.event_on:
             st.ev_votes += 1
             if st.ev_votes >= 2:
@@ -622,9 +698,12 @@ class Engine:
         else:
             st.ev_votes = 0
 
+        held_now, _ = hallows.held_slot(img, slots)
+        if st.event_on and not st.done and not st.ending and time.time() - st.last_press < PRESS_SETTLE:
+            return []
         if st.event_on and not st.done and not st.ending:
             cur = st.cur_slot if st.cur_slot in slots else 0
-            if cur and hallows.slot_held(img, cur)[0]:
+            if cur and held_now == cur:
                 lead = self._timer_check(acc, st, s, img)
                 if lead:
                     return lead
@@ -632,11 +711,14 @@ class Engine:
                 cur = self._pick_slot(acc, st, slots, img)
                 if not cur:
                     return []
-            held, _ = hallows.slot_held(img, cur)
-            if not held:
+            if held_now != cur:
                 if st.hold_fail.get(cur, 0) >= 1:
-                    self.log(f"Slot {cur} won't stay held (empty, or the hotbar can't be read in this window). "
-                             "Skipping it.", acc, "warn")
+                    if held_now is None:
+                        st.done = True
+                        self.log("Can't read the hotbar in this window (too small, or hidden by the fishing bar), "
+                                 "so nothing more is pressed this event.", acc, "warn")
+                        return []
+                    self.log(f"Slot {cur} won't stay held (is it empty?). Skipping it.", acc, "warn")
                     st.ev_log.append((cur, "couldn't hold"))
                     st.cur_slot = 0
                     return []
@@ -659,25 +741,54 @@ class Engine:
                     return self._mutated(acc, st, s, cur, name, word)
             return []
 
-        out = []
-        for slot in slots:
-            if hallows.slot_held(img, slot)[0]:
-                st.stray[slot] = st.stray.get(slot, 0) + 1
-                if st.stray[slot] >= 2 and not out:
-                    st.stray[slot] = 0
-                    out = self._press_for(acc, st, slot, False)
-            else:
-                st.stray.pop(slot, None)
-        if not out:
+        return self._stray_check(acc, st, s, img, held_now)
+
+    def _stray_check(self, acc, st, s, img, held_now=None):
+        slots = char_slots(s)
+        now = time.time()
+        if st.ev_votes or now - st.last_press < PRESS_SETTLE:
+            st.stray = {}
+            return []
+        if held_now is None:
+            held_now, _ = hallows.held_slot(img, slots)
+        if held_now in slots and now >= st.stray_block.get(held_now, 0):
+            st.stray = {held_now: st.stray.get(held_now, 0) + 1}
+            if st.stray[held_now] >= 2:
+                st.stray = {}
+                if st.event_on:
+                    reason = "Hallow's Eve handling is finished for this event"
+                elif st.ev_name and st.ev_name != "hallows":
+                    reason = f"{hallows.EVENTS.get(st.ev_name, st.ev_name)} is on, not Hallow's Eve"
+                else:
+                    reason = "no Hallow's Eve event is on"
+                return self._press_for(acc, st, held_now, False, retries=0,
+                                       label=f"Putting away slot {held_now} ({reason})")
+        else:
+            st.stray = {}
             st.intent_count = 0
             st.stuck_n = 0
-        return out
+        return []
+
+    def _track_event(self, acc, st, name):
+        if name == st.ev_seen:
+            st.ev_name_votes += 1
+        else:
+            st.ev_seen, st.ev_name_votes = name, 1
+        if st.ev_name_votes < 2 or name == st.ev_name:
+            return
+        old, st.ev_name = st.ev_name, name
+        if name and name != "hallows":
+            self.log(f"Event showing: {hallows.EVENTS.get(name, name)}. It's not Hallow's Eve, so no character "
+                     "will be held.", acc)
+        elif not name and old and old != "hallows":
+            self.log(f"{hallows.EVENTS.get(old, old)} is over.", acc)
 
     def _event_started(self, acc, st, why):
         st.done = st.ending = False
         st.tried, st.hold_fail, st.stray, st.ev_log = set(), {}, {}, []
         st.cur_slot, st.offlist, st.mut_name, st.mut_votes = 0, 0, "", 0
         st.end_at, st.end_reads, st.next_timer = 0.0, [], 0.0
+        st.ev_start = time.time()
         d = self.hstats.event(acc.user_id)
         self.log(f"Hallow's Eve started ({why}). That's event #{d['since']} since the last Dracula "
                  f"({d['events']} counted, {d['hits']} Dracula so far).", acc)
@@ -689,10 +800,14 @@ class Engine:
         st.cur_slot = 0
 
     def _pick_slot(self, acc, st, slots, img):
+        count = hallows.hotbar_count(img)
         for slot in slots:
             if slot in st.tried:
                 continue
             st.tried.add(slot)
+            if count and slot > count:
+                self.log(f"Slot {slot} is empty (your hotbar has {count} slots), skipping it.", acc)
+                continue
             if hallows.slot_is_potion(img, slot):
                 self.log(f"Slot {slot} is a potion, skipping it.", acc)
                 continue
@@ -739,11 +854,38 @@ class Engine:
         st.cur_slot = 0
         return []
 
+    def _put_away_lead(self, s):
+        base = max(0.0, float(s.get("hallows_end_lead_s", 4) or 0))
+        if base <= 0:
+            return 0.0
+        holders = 0
+        for a in self.get_accounts():
+            o = self.states.get(a.user_id)
+            if o and o.event_on and not o.ending and not o.done and o.cur_slot:
+                holders += 1
+        press = max(self.press_times[-5:]) if self.press_times else 3.0
+        auto = max(1, holders) * (press + 2.0) + 3.0
+        return min(45.0, max(base, auto))
+
+    def _shared_end(self, acc, st):
+        for a in self.get_accounts():
+            o = self.states.get(a.user_id)
+            if o is None or o is st or not o.end_at or not o.ev_start or not st.ev_start:
+                continue
+            if abs(o.ev_start - st.ev_start) <= 15:
+                return o.end_at
+        return 0.0
+
     def _timer_check(self, acc, st, s, img):
         now = time.time()
-        lead = max(0.0, float(s.get("hallows_end_lead_s", 4) or 0))
+        lead = self._put_away_lead(s)
         if lead <= 0:
             return []
+        if not st.end_at:
+            shared = self._shared_end(acc, st)
+            if shared:
+                st.end_at = shared
+                self.log("Using the event timer read on another account (same event start).", acc)
         if st.end_at and now >= st.end_at - lead:
             st.ending = True
             left = max(0, int(round(st.end_at - now)))
@@ -765,7 +907,7 @@ class Engine:
             st.next_event = min(st.next_event, now + 1)
         return []
 
-    def _press_for(self, acc, st, slot, want_held):
+    def _press_for(self, acc, st, slot, want_held, retries=1, label=None):
         intent = (slot, want_held)
         st.intent_count = st.intent_count + 1 if st.intent == intent else 1
         st.intent = intent
@@ -778,8 +920,8 @@ class Engine:
             st.backoff_until = time.time() + wait
             st.intent_count = 0
             return []
-        return [("key", win.slot_key(slot), f"{'Holding' if want_held else 'Putting away'} slot {slot}",
-                 slot, want_held)]
+        label = label or f"{'Holding' if want_held else 'Putting away'} slot {slot}"
+        return [("key", win.slot_key(slot), label, slot, want_held, retries)]
 
     def _run_jobs(self, acc, st, s, jobs):
         need_idle = float(s.get("wait_for_idle_s", 1.5))
@@ -817,6 +959,9 @@ class Engine:
                     return
             for job in jobs:
                 kind = job[0]
+                if kind == "popup":
+                    do_popup(ctx, job[1], job[2])
+                    continue
                 if kind == "close_purchase":
                     if ctx.dismiss_purchase():
                         self.log("Closed a Robux pop-up (never bought anything). If it came from a rebirth, "
@@ -825,8 +970,19 @@ class Engine:
                 if kind == "key":
                     self.log(job[2] + ".", acc)
                     ctx.key(job[1])
-                    if len(job) >= 5 and not verify_slot_key(ctx, job[1], job[3], job[4]) and job[4]:
-                        st.hold_fail[job[3]] = st.hold_fail.get(job[3], 0) + 1
+                    if len(job) >= 5:
+                        retries = job[5] if len(job) > 5 else 1
+                        t_press = time.time()
+                        res = verify_slot_key(ctx, job[1], job[3], job[4], retries)
+                        st.last_press = time.time()
+                        if res == "ok":
+                            self.press_times = (self.press_times + [time.time() - t_press])[-10:]
+                        if res != "ok" and job[4]:
+                            st.hold_fail[job[3]] = st.hold_fail.get(job[3], 0) + 1
+                        if res != "ok" and not job[4] and retries == 0:
+                            st.stray_block[job[3]] = time.time() + 900
+                            self.log(f"Slot {job[3]} didn't change after one press, so it won't be pressed again "
+                                     "for 15 min (the hotbar may be hard to read in this window).", acc, "warn")
                 elif kind == "return":
                     do_return(ctx)
                 elif kind == "anti_afk":
@@ -857,7 +1013,6 @@ class Engine:
             if str(e):
                 self.log(str(e), acc, "warn")
         finally:
-            st.last_input = time.time()
             if s.get("restore_user_focus"):
                 try:
                     win.user32.SetCursorPos(*prev_cursor)
@@ -916,6 +1071,7 @@ class Ctx:
                 raise PurchasePromptOpen("")
             win.move_to(*self.screen_xy(x, y))
             win.mouse_click(hold=max(CLICK_HOLD, 1.5 * game_frame(self.s)))
+            self.st.last_input = time.time()
             if i < times - 1:
                 time.sleep(gap)
 
@@ -969,14 +1125,43 @@ class Ctx:
         self.ensure_front()
         win.move_to(*self.screen_xy(*xy))
         win.mouse_click(hold=max(CLICK_HOLD, 1.5 * game_frame(self.s)))
+        self.st.last_input = time.time()
 
     def key(self, k, hold=None):
         self.ensure_front()
         win.press_key(k, key_hold(self.s) if hold is None else max(hold, key_hold(self.s)))
+        self.st.last_input = time.time()
 
     def guard(self):
         if self.purchase_open():
             raise PurchasePromptOpen("")
+
+
+def do_popup(ctx, which, xy):
+    finder = popups.join_event_x if which == "join" else popups.daily_claim
+    what = "the Join Event pop-up (with its X)" if which == "join" else "Daily Rewards (pressing Claim)"
+    for _ in range(3):
+        img = ctx.shot()
+        xy = finder(img)
+        if not xy:
+            ctx.log(f"Closed {what}." if which == "join" else "Daily Rewards claimed.")
+            return True
+        ctx.log(f"Handling {what}.")
+        ctx._click_raw(xy)
+        ctx.wait(1.5)
+    if finder(ctx.shot()):
+        ctx.log(f"Couldn't clear {what} after 3 clicks.", "warn")
+        return False
+    ctx.log(f"Closed {what}." if which == "join" else "Daily Rewards claimed.")
+    return True
+
+
+def clear_popups(ctx):
+    img = ctx.shot()
+    if popups.join_event_x(img):
+        do_popup(ctx, "join", None)
+    if popups.daily_claim(img):
+        do_popup(ctx, "daily", None)
 
 
 def do_return(ctx):
@@ -1220,6 +1405,7 @@ def do_selene_turn(ctx):
 
 
 def do_selene_builtin(ctx):
+    clear_popups(ctx)
     ctx.log("Selene is here. Opening her shop.")
     if not _open_shop(ctx, "Selene", builtin.selene_prompt):
         ctx.log("Selene's shop didn't open. Will look again in a minute.", "warn")
@@ -1232,6 +1418,7 @@ def do_selene_builtin(ctx):
 
 
 def do_boost_builtin(ctx):
+    clear_popups(ctx)
     img = ctx.shot()
     if builtin.selene_prompt(img):
         ctx.log("Selene is standing here, so E would open her shop instead. Skipped this boost restock.", "warn")
@@ -1268,11 +1455,20 @@ def do_boost_builtin(ctx):
 
 
 def do_rebirth_builtin(ctx):
+    clear_popups(ctx)
     img = ctx.shot()
     if ctx.purchase_open(img):
         if not ctx.dismiss_purchase():
             raise Abort("")
         img = ctx.shot()
+    cash = None
+    if ctx.s.get("rebirth_read_cash", True):
+        cash, _ = money.read(ctx.shot, money.cash_box, wait=ctx.wait)
+        cost = ctx.st.rebirth_cost
+        if cash is not None and cost is not None and cash[0] < cost[0]:
+            ctx.log(f"Cash {money.text(cash)} is below the rebirth cost {money.text(cost)}, so the menu isn't "
+                    f"opened. Checking again in {ctx.s['rebirth_every_min']} min.")
+            return
     btn = builtin.rebirth_button(img)
     if not btn:
         if builtin.shop_open(img):
@@ -1317,6 +1513,15 @@ def do_rebirth_builtin(ctx):
                 "Skipped this rebirth - if you're at 250, do it yourself. Will check again next time.", "warn")
         _builtin_close_x(ctx, lambda im: builtin.rebirth_button(im) is not None)
         return
+    cost = None
+    if ctx.s.get("rebirth_read_cash", True):
+        cost, _ = money.read(ctx.shot, money.cost_box, wait=ctx.wait)
+        if cost is not None:
+            ctx.st.rebirth_cost = cost
+        if cash is not None and cost is not None and cash[0] < cost[0]:
+            ctx.log(f"Rebirth costs {money.text(cost)} and you have {money.text(cash)}. Not yet, closing the menu.")
+            _builtin_close_x(ctx, lambda im: builtin.rebirth_button(im) is not None)
+            return
     ctx.click(btn[0], btn[1])
     end = time.time() + float(ctx.s.get("rebirth_popup_wait_s", 6))
     while time.time() < end and not ctx.purchase_open():
@@ -1328,6 +1533,12 @@ def do_rebirth_builtin(ctx):
                 f"Trying again in {ctx.s['rebirth_every_min']} min.")
     else:
         ctx.log("Rebirth clicked and no 'not enough cash' pop-up appeared, so it should have gone through.")
+        if cost is not None and ctx.s.get("rebirth_read_cash", True):
+            ctx.wait(1.5)
+            new, _ = money.read(ctx.shot, money.cost_box, wait=ctx.wait)
+            if new is not None and new[0] != cost[0]:
+                ctx.st.rebirth_cost = new
+                ctx.log(f"Next rebirth costs {money.text(new)}.")
     ctx.wait(1.5)
     if builtin.sacrifice_popup(ctx.shot()):
         ctx.e._hold_for_sacrifice(ctx.acc, ctx.st)
@@ -1375,6 +1586,9 @@ def do_anti_afk(ctx):
 def game_frame(s):
     try:
         fps = float(s.get("game_fps", 60) or 60)
+        cap = float(s.get("roblox_fps_cap", 0) or 0)
+        if 0 < cap < fps:
+            fps = cap
     except (TypeError, ValueError):
         fps = 60.0
     return 1.0 / min(240.0, max(1.0, fps))
@@ -1392,38 +1606,38 @@ def char_slots(s):
     return list(range(first, last + 1))
 
 
-def verify_slot_key(ctx, key, slot, want_held):
+def verify_slot_key(ctx, key, slot, want_held, retries=1):
     fr = game_frame(ctx.s)
     want = bool(want_held)
-    plan = [(None, max(2.6, 13 * fr)), (None, max(3.0, 15 * fr)),
-            (max(0.8, 5 * fr), max(3.5, 17 * fr)), (max(1.2, 5 * fr), max(4.0, 20 * fr))]
-    if want:
-        plan = plan[:3]
-    for attempt, (hold, wait) in enumerate(plan):
+    waits = [max(2.6, 13 * fr), max(3.5, 17 * fr)]
+    unreadable = True
+    for attempt in range(retries + 1):
         if attempt:
-            if hallows.slot_held(ctx.shot(), slot)[0] == want:
-                return True
-            what = "held" if want else "put away"
-            if hold:
-                ctx.log(f"Slot {slot} still isn't {what}. Pressing it again and holding the key for {hold:.1f}s.",
-                        "warn")
-            else:
-                ctx.log(f"Slot {slot} still isn't {what} after {plan[attempt - 1][1]:.1f}s. Pressing it once more.",
-                        "warn")
+            got, _ = hallows.held_slot(ctx.shot(), char_slots(ctx.s))
+            if (got == slot) == want and (got is not None or not want):
+                return "ok"
+            if got is None:
+                ctx.log(f"Can't see the hotbar clearly, so slot {slot} isn't pressed again.", "warn")
+                return "unreadable"
+            hold = max(0.8, 5 * fr)
+            ctx.log(f"Slot {slot} still isn't {'held' if want else 'put away'}. Pressing it once more and holding "
+                    f"the key for {hold:.1f}s.", "warn")
             ctx.key(key, hold=hold)
-        end = time.time() + wait
+        end = time.time() + waits[min(attempt, len(waits) - 1)]
         good = 0
         while time.time() < end:
             ctx.wait(max(0.12, fr))
-            if hallows.slot_held(ctx.shot(), slot)[0] == want:
+            got, _ = hallows.held_slot(ctx.shot(), char_slots(ctx.s))
+            if got is not None:
+                unreadable = False
+            if (got == slot) == want and (got is not None or not want):
                 good += 1
                 if good >= 2:
-                    return True
+                    return "ok"
             else:
                 good = 0
-    ctx.log(f"Slot {slot} still isn't {'held' if want else 'put away'} after {len(plan)} presses. "
-            "Check that window.", "warn")
-    return False
+    ctx.log(f"Slot {slot} still isn't {'held' if want else 'put away'}. Check that window.", "warn")
+    return "unreadable" if unreadable else "unchanged"
 
 
 def do_ability(ctx):
@@ -1437,14 +1651,25 @@ def do_ability(ctx):
     if busy:
         st.next_ability = time.time() + 3
         return
+    ref = s.get("ability_ref")
     if only_ready and ability.valid_pos(pos):
-        if not ability.is_ready(img, pos):
-            st.next_ability = time.time() + every
+        now = time.time()
+        if not st.ability_seen:
+            st.ability_seen = now
+        if not ability.is_ready(img, pos, ref):
+            st.next_ability = now + 3
+            if now - st.ability_seen > 300 and not st.ability_warned:
+                st.ability_warned = True
+                ctx.log(f"Auto ability: the marked button hasn't looked ready (green) for 5 minutes "
+                        f"(green share {ability.ready_fraction(img, pos, ref):.2f}, needs "
+                        f"{ability.READY_FRACTION:.2f}). Mark it again on this window (Settings > Auto ability), "
+                        "or turn off 'only when ready'.", "warn")
             return
         ctx.wait(0.35)
-        if not ability.is_ready(ctx.shot(), pos):
-            st.next_ability = time.time() + every
+        if not ability.is_ready(ctx.shot(), pos, ref):
+            st.next_ability = time.time() + 3
             return
+        st.ability_seen = time.time()
     elif only_ready and not st.ability_warned:
         st.ability_warned = True
         ctx.log("Auto ability: the ability button isn't marked yet (Settings > Auto ability > Mark ability button), "

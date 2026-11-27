@@ -1,5 +1,44 @@
 # Changelog
 
+## v1.4.0
+
+### New
+- **How to use page.** A new **❓ How to use** page in the app explains every feature, setup step and common problem, so you don't need Discord or GitHub to learn it.
+- **Join Event and Daily Rewards pop-ups are cleared by themselves.** Join Event is closed with its X; Daily Rewards is claimed (only when its button really says Claim). Both used to block E and clicks, which could make Selene visits and rebirths quietly fail.
+- **Rebirth only when you can afford it.** The app reads your cash and the rebirth cost, and doesn't open the rebirth menu (or trigger the "not enough cash" Robux pop-up) until you can rebirth. It remembers the next cost after each rebirth. If the numbers can't be read it falls back to the old way. Setting: **Only open the rebirth menu when you can afford it** (on).
+- **Cap Roblox's FPS.** Writes Roblox's own "Maximum Frame Rate" before each launch, which saves a lot of CPU. 30 is a good AFK value; 0 puts Roblox's own setting back. Key presses automatically last long enough for that FPS.
+- **Restart each Roblox every N hours** (off by default) to free the memory Roblox piles up over long AFK runs. It waits until the account isn't busy with Hallow's Eve, Selene, a rebirth or a pop-up.
+
+### Selene
+- **Selene by the clock.** She's only in town for 5 minutes from every :00 and :30, so the app only looks for her then, and doesn't start a new visit in her last 50 seconds so nobody gets cut off. Setting: **Only look for her while she's in town** (on).
+
+### Hallow's Eve
+- **Smarter "put away before the end".** The lead time now grows with how many accounts are holding a character and how long a press really takes (up to 45 s), so the last account isn't late. Accounts in small windows use the timer read on another account in the same event.
+- **Safer held-slot reading.**
+  - The selection frame has to be a thin line around one slot, so blue floor or water around the hotbar no longer counts.
+  - On bigger windows, the blue "Lvl." text that only shows on the held character is used as a second check.
+  - For a few seconds after a press, readings are ignored so game lag can't cause a second press.
+
+### Rejoin
+- An account counts as back in game when its hotbar shows up, not only when the Shops button is visible.
+
+## v1.3.3
+
+### Anti-AFK (fixed)
+- **Anti-AFK never ran for accounts with Auto ability on.** The ability check runs every few seconds, and the app counted each check as "activity" even when no key was pressed, so the anti-AFK timer never ran out and Roblox kicked the account after 20 minutes. Now only real key presses and clicks count, so anti-AFK kicks in on time.
+
+### Auto ability (fixed)
+- The marked ability button is now also found on windows of a different size from the one you marked it on.
+- If the button hasn't looked ready for 5 minutes, the log says so (with how green it looks) and tells you to mark it again, instead of silently never pressing.
+
+### Hallow's Eve (fixed)
+- **The hotbar really doesn't have to be full now.** Roblox shrinks the hotbar and centres it when you have fewer items, but the app always looked where a full 10-slot hotbar would be, so with fewer items it read (and pressed) the wrong slots. It now finds the hotbar on screen, counts how many slots it has, and skips any character slot you listed that's empty.
+- **No more random number-key presses.** Blue floor or water showing where the hotbar should be (for example while the fishing bar covers it) could look like a held character, so the app kept "putting away" slots that weren't held, which picked them up instead. The held-slot check now looks for the real selection frame around one slot and ignores blue that covers everything.
+- When no Hallow's Eve is on (or a different event is), a character in hand is put away within about 2 seconds: the hotbar is checked every second and two looks in a row have to agree. If one press doesn't change anything, that slot isn't pressed again for 15 minutes.
+- A slot is never pressed twice in a row unless the hotbar can clearly be read; if it can't, the app stops pressing for that event and says so.
+- **Every event is logged by name:** Hallow's Eve, Heaven's Collide, Solar, Hell's Gates and Slime Rain. Anything other than Hallow's Eve is treated as "not Hallow's Eve": no character is held, and a held one is put away.
+- The banner title is read better on small windows (tested down to about 540 px wide).
+
 ## v1.3.2
 
 ### Launching

@@ -41,11 +41,89 @@ def _centre(img, box):
     return (w / 2 + (x0 - 960) * s, h / 2 + (y0 - 508.5) * s, w / 2 + (x1 - 960) * s, h / 2 + (y1 - 508.5) * s)
 
 
+BAR_PITCH, BAR_SLOT_W = 85.6, 77.0
+BAR_TOP_FROM_BOTTOM, BAR_ROWS = 67.0, 50.0
+_layout_memo = {"key": None, "val": None}
+
+
+def _layout_key(img):
+    h, w = img.shape[:2]
+    band = img[max(0, h - 70):h:7, ::37]
+    return (h, w, hash(band.tobytes()))
+
+
+def hotbar_layout(img):
+    key = _layout_key(img)
+    if _layout_memo["key"] == key:
+        return _layout_memo["val"]
+    val = _find_layout(img)
+    _layout_memo["key"], _layout_memo["val"] = key, val
+    return val
+
+
+def _find_layout(img):
+    h, w = img.shape[:2]
+    s = hud_scale(img)
+    top = int(round(h - BAR_TOP_FROM_BOTTOM * s))
+    bot = int(round(top + BAR_ROWS * s))
+    band = img[max(0, top):min(h, bot)]
+    if band.shape[0] < 4 or w < 200:
+        return None
+    pitch, sw = BAR_PITCH * s, BAR_SLOT_W * s
+    f = band.astype(np.float32)
+    gray = f.mean(axis=2)
+    col = f.mean(axis=(0, 2))
+    edge = np.zeros(w, np.float32)
+    edge[1:-1] = np.abs(col[2:] - col[:-2])
+    emax = edge.copy()
+    for k in range(1, 3):
+        emax[k:] = np.maximum(emax[k:], edge[:-k])
+        emax[:-k] = np.maximum(emax[:-k], edge[k:])
+    cg = np.concatenate([[0.0], np.cumsum(gray.mean(axis=0))])
+    cd = np.concatenate([[0.0], np.cumsum((gray < 80).mean(axis=0))])
+    offs = np.arange(0, max(1, int(w - sw)))
+    alive = np.ones(len(offs), bool)
+    count = np.zeros(len(offs), int)
+    score = np.zeros(len(offs))
+    thr = 20.0 * max(0.5, min(1.0, s * 1.3))
+    for k in range(10):
+        L = np.round(offs + k * pitch).astype(int)
+        R = np.round(L + sw).astype(int)
+        inside = R < w
+        Lc, Rc = np.clip(L, 0, w - 1), np.clip(R, 0, w - 1)
+        a = np.clip(L + int(8 * s), 0, w)
+        b = np.clip(L + int(69 * s), 0, w)
+        n = np.maximum(b - a, 1)
+        ok = inside & (emax[Lc] > thr) & (emax[Rc] > thr) & ((cg[b] - cg[a]) / n < 120) & ((cd[b] - cd[a]) / n > 0.5)
+        alive &= ok
+        count += alive
+        score += np.where(alive, emax[Lc] + emax[Rc], 0.0)
+    best = int(count.max())
+    if best < 1:
+        return None
+    cands = np.flatnonzero(count == best)
+    centre = lambda left: abs(left + ((best - 1) * pitch + sw) / 2.0 - w / 2.0)
+    near = [c for c in cands if centre(offs[c]) <= 14 * max(s, 0.4)]
+    if not near:
+        return None
+    pick = max(near, key=lambda c: score[c])
+    return float(offs[pick]), best
+
+
+def hotbar_count(img):
+    lay = hotbar_layout(img)
+    return lay[1] if lay else None
+
+
 def slot_box(img, n):
     h, w = img.shape[:2]
     s = hud_scale(img)
-    left = w / 2 + (SLOT1_LEFT + (n - 1) * SLOT_PITCH - 960) * s
     top = h - (REF_H - SLOT_TOP) * s
+    lay = hotbar_layout(img)
+    if lay:
+        left = lay[0] - 2 * s + (n - 1) * BAR_PITCH * s
+    else:
+        left = w / 2 + (SLOT1_LEFT + (n - 1) * SLOT_PITCH - 960) * s
     return (left, top, left + SLOT_SIZE * s, top + SLOT_SIZE * s)
 
 
@@ -71,21 +149,163 @@ def _ocr(img, config):
         return ""
 
 
-def slot_held(img, n):
-    sub = _crop(img, slot_box(img, n))
-    if sub is None:
-        return False, 0.0
+def _blue(px):
+    hsv = cv2.cvtColor(np.ascontiguousarray(px), cv2.COLOR_BGR2HSV)
+    return (hsv[..., 0] >= 92) & (hsv[..., 0] <= 112) & (hsv[..., 1] >= 150) & (hsv[..., 2] >= 170)
+
+
+def _pure(px):
+    b, g, r = px[..., 0].astype(int), px[..., 1].astype(int), px[..., 2].astype(int)
+    return (b >= 248) & (r <= 25) & (g >= 120) & (g <= 205)
+
+
+def slot_frame(img, n):
     s = hud_scale(img)
-    t = max(2, int(round(5 * s)))
+    pad = max(3, int(round(6 * s)))
+    l, tp, r, b = (int(round(v)) for v in slot_box(img, n))
+    H_, W_ = img.shape[:2]
+    x0, y0, x1, y1 = l - 2 * pad, tp - 2 * pad, r + 2 * pad, b + 2 * pad
+    if x1 <= 0 or y1 <= 0 or x0 >= W_ or y0 >= H_:
+        return 0.0, 1.0
+    sub = img[max(0, y0):min(H_, y1), max(0, x0):min(W_, x1)]
+    sub = np.pad(sub, ((max(0, -y0), max(0, y1 - H_)), (max(0, -x0), max(0, x1 - W_)), (0, 0)))
     h, w = sub.shape[:2]
-    mask = np.zeros((h, w), bool)
-    mask[:t, :] = mask[-t:, :] = True
-    mask[:, :t] = mask[:, -t:] = True
-    px = sub[mask].astype(int)
-    b, g, r = px[:, 0], px[:, 1], px[:, 2]
-    blue = (r < 60) & (g >= 125) & (g <= 215) & (b >= 215)
-    frac = float(blue.mean()) if len(px) else 0.0
-    return frac >= (0.25 if s >= 0.75 else 0.17), frac
+    bar = max(2, int(round(3 * s)))
+    if h < 6 * pad or w < 6 * pad:
+        return 0.0, 1.0
+    blue = _blue(sub)
+    ys = slice(3 * pad, h - 3 * pad)
+    xs = slice(3 * pad, w - 3 * pad)
+
+    def col(m, x):
+        return float(m[ys, x:x + bar].mean()) if 0 <= x and x + bar <= w else 1.0
+
+    def row(m, y):
+        return float(m[y:y + bar, xs].mean()) if 0 <= y and y + bar <= h else 1.0
+
+    def side(get, lo, hi, outward):
+        best = 0.0
+        for p in range(lo, hi + 1):
+            loose = get(blue, p)
+            if loose < 0.3:
+                continue
+            outer = get(blue, p + outward * bar)
+            if outer < 0.5:
+                best = max(best, loose)
+        return best
+
+    left = side(col, pad, 3 * pad, -1)
+    right = side(col, w - 3 * pad - bar, w - pad - bar, 1)
+    top = side(row, pad, 3 * pad, -1)
+    bottom = side(row, h - 3 * pad - bar, h - pad - bar, 1)
+    m = 4 * pad
+    inner = float(blue[m:h - m, m:w - m].mean()) if h > 2 * m + 2 and w > 2 * m + 2 else 1.0
+    return min(left, right, top, bottom), inner
+
+
+LVL_PNG = (
+    "iVBORw0KGgoAAAANSUhEUgAAABcAAAANCAIAAADNBWIKAAADlklEQVQoFQXBfUwbZRwA4N9LC20PuhtQYKxs61FAClzAlEQKVzMG"
+    "wpINGW4ozjVdoybiRtQYpy7idDCHLiYbabLsj4myJswtsclczAzLDGFWJrZsjA9TKNwBBUoLLcV+9+71eZDv+StDv66wK+FwJLEV"
+    "iC+7QxmSRJUG78nFcQG82+DZwPOLEInjrGyQyQAB0Hn1ncda5IQ0IQizs8tPJ13o4VDNgxEPtxpZYEOb/lhFsXCyBR84gJMYtkOQ"
+    "4CESxU4XPBzBKx4QiUCRA/Vlh7pOtBBSaTIh/Ot0P5tcQP0Xym0TW7/8gXOr3vBN37v0HlddhaZc+O+nsOmHrN1QReNcBdwYxBNL"
+    "VfICbXDqZmd7wwftR4k0aTwpOJ2rTqcb9XxU/GQyOObR0Sarw6y/2mkTEWjgNnDLEI0BKYdMUigqhBknDpdbSIqxf6eiaTA2tr+m"
+    "ZzBGLOvzbPjRl2fU49PBcV8dbbI6zPqe07alNXTDIiQlVGq6gojZ/QFeXtwamH9Ucvw6STH/fKsq1YC+tM7Y2JQhkwQCO5FYEnV3"
+    "Fo7aA1Phl2mT1WHWf9Zh8/lQ/wCvPTcfD65PXmfEJKU772KHL8oURSTFjPepqEJACDWW17bV1IghBYlE6PN3qN8ee93iRtpkdZj1"
+    "/UabMgd9bxFm5d1U89dj3xTlaU9RTRfGLhdRhy+SFGPvU+XlQ2oaCDw6qKmuKy2Nx4LoY8P+BzafR9ZEm6wOs/7Hd23VL8D0IrT2"
+    "KnVfsNxwT57WEAssuX6qLzhmISnm2RVVtgKBCCOAFwvUBzVqTW0b+tS4//6o10M00yarw6zfi//keezfASyAsuN3UlUrkmTMDhlz"
+    "tgZ5nYWkGHufSgDgeShUZr5/hJGIYC6ZhyxfaS4Psh6imTZZAwujgIXUdAUAPL9aIS9/vdzwMx/bedKT31AZYtUWkmL+ukS9dG4m"
+    "7J3bvGe49uHJEubVawN30JWz1A/317wZhyuMdxPhrUTIlwj54sG1xdsdAkrTnufW7Rb1+ieEFJz7bhG5pZM3W3TdnPuxGRx9vW+3"
+    "VTaf8m9wqOt4vm16e8oVTSSFzHTIJlHWLtglBSYLZli4s4jK9gn9XWjEAb13JXJxNJxISfIgk4rPnGh409C5W1nCTQyjs2175tyh"
+    "QmnkdCUuUOHU9BRBwNEI3uHgv2Ug9kKmGrAIYwH4OFrlsHkMP2LRkbqaVl1l2aG3/OucNLL8P1pgstNBU4Q8AAAAAElFTkSuQmCC"
+)
+_LVL = {}
+
+
+def _lvl_feats(bgr):
+    f = bgr.astype(np.float32)
+    b, g, r = f[..., 0], f[..., 1], f[..., 2]
+    blue = np.clip((b - r - 60.0) / 130.0, 0, 1) * (b > 110)
+    near = cv2.dilate((blue > 0.25).astype(np.uint8), np.ones((3, 3), np.uint8)).astype(np.float32)
+    dark = np.clip(1.0 - f.max(axis=2) / 90.0, 0, 1) * (1.0 - blue) * near
+    return np.dstack([blue, dark, np.zeros_like(blue)]).astype(np.float32)
+
+
+def _lvl_templates(s):
+    key = round(s, 2)
+    if key not in _LVL:
+        import base64
+        raw = np.frombuffer(base64.b64decode("".join(LVL_PNG)), np.uint8)
+        tpl = cv2.imdecode(raw, cv2.IMREAD_COLOR)
+        out = []
+        for k in (0.85, 0.95, 1.05, 1.15):
+            f = s * k
+            if tpl.shape[1] * f < 8:
+                continue
+            small = cv2.resize(tpl, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+            out.append(cv2.GaussianBlur(_lvl_feats(small), (0, 0), 0.7))
+        _LVL[key] = out
+    return _LVL[key]
+
+
+def lvl_score(img, n):
+    s = hud_scale(img)
+    l, t, r, b = (int(round(v)) for v in slot_box(img, n))
+    w = r - l
+    sub = _crop(img, (l - 2 * s, t - 2 * s, l + w * 0.72, t + w * 0.42))
+    if sub is None:
+        return 0.0
+    feats = cv2.GaussianBlur(_lvl_feats(sub), (0, 0), 0.7)
+    integ = cv2.integral(feats[..., 0])
+    best = 0.0
+    for tpl in _lvl_templates(s):
+        th, tw = tpl.shape[:2]
+        if feats.shape[0] < th or feats.shape[1] < tw:
+            continue
+        res = np.nan_to_num(cv2.matchTemplate(feats, tpl, cv2.TM_CCOEFF_NORMED))
+        ih, iw = res.shape
+        mass = integ[th:th + ih, tw:tw + iw] - integ[0:ih, tw:tw + iw] - integ[th:th + ih, 0:iw] + integ[0:ih, 0:iw]
+        res = np.where(mass >= 0.5 * float(tpl[..., 0].sum()), res, 0.0)
+        best = max(best, float(res.max()))
+    return best
+
+
+LVL_ON, LVL_OFF, LVL_MIN_SCALE, LVL_VETO_SCALE = 0.62, 0.45, 0.9, 0.7
+
+
+def held_slot(img, slots=None):
+    if img is None:
+        return None, {}
+    s = hud_scale(img)
+    need = 0.45 if s >= 0.6 else 0.3
+    lay = hotbar_layout(img)
+    if not lay:
+        return None, {}
+    count = lay[1]
+    scores = {n: 0.0 for n in range(1, 11)}
+    for n in range(1, count + 1):
+        frame, inner = slot_frame(img, n)
+        scores[n] = frame if inner < 0.35 else 0.0
+    ranked = sorted(scores.items(), key=lambda kv: -kv[1])
+    best_n, best = ranked[0]
+    second = ranked[1][1]
+    unique = best >= need and second < need and best >= 1.6 * max(second, 0.02)
+    mine = [n for n in (slots or []) if 1 <= n <= count]
+    if unique and best_n in mine and best < 0.8 and s >= LVL_VETO_SCALE and lvl_score(img, best_n) <= 0.3:
+        return None, scores
+    if s >= LVL_MIN_SCALE and len(mine) >= 2:
+        lv = {n: lvl_score(img, n) for n in mine}
+        if not unique:
+            on = [n for n, v in lv.items() if v >= LVL_ON]
+            if len(on) == 1 and all(v <= LVL_OFF for n, v in lv.items() if n != on[0]):
+                return on[0], scores
+    if not unique:
+        return None, scores
+    return best_n, scores
+
+
+def slot_held(img, n, slots=None):
+    got, scores = held_slot(img, slots)
+    return got == n, scores.get(n, 0.0)
 
 
 def _clean(text):
@@ -125,29 +345,68 @@ def _variants(pil, factor):
     gray = big.convert("L")
     yield gray
     yield gray.point(lambda p: 255 if p > 170 else 0)
+    hsv = cv2.cvtColor(np.array(big.convert("RGB")), cv2.COLOR_RGB2HSV)
+    warm = (hsv[..., 1] >= 120) & (hsv[..., 2] >= 170) & ((hsv[..., 0] <= 35) | (hsv[..., 0] >= 170))
+    if warm.mean() > 0.02:
+        yield Image.fromarray(np.where(warm, 0, 255).astype("uint8"))
 
 
-def hallows_event(img):
+EVENTS = {
+    "hallows": "Hallow's Eve",
+    "heavens": "Heaven's Collide",
+    "solar": "Solar",
+    "hells": "Hell's Gates",
+    "slime": "Slime Rain",
+}
+OTHER_TITLE = {"heavens": ["heavens", "heaven", "collide"], "solar": ["solar"], "hells": ["hells", "gates"],
+               "slime": ["slime"]}
+OTHER_BODY = {"heavens": ["angelic", "falling"], "solar": ["solar"], "hells": ["hells"], "slime": ["slime"]}
+
+
+def _other_event(text, table, cutoff=0.82):
+    toks = [tok.replace("'", "") for tok in re.findall(r"[a-z']+", _clean(text))]
+    for key, words in table.items():
+        for tok in toks:
+            if len(tok) < 4:
+                continue
+            for w in words:
+                if difflib.SequenceMatcher(None, tok, w).ratio() >= cutoff:
+                    return key
+    return ""
+
+
+def classify_event(img):
     if not builtin.ocr_ready():
-        return False, "text reader not available"
+        return "", "text reader not available"
     s = hud_scale(img)
     title = _crop(img, _top_centre(img, TITLE_BOX))
     title_text = ""
     if title is not None:
         for v in _variants(_pil(title), 3.0 / s):
             title_text += " " + _ocr(v, "--psm 7")
+            other = _other_event(title_text, OTHER_TITLE, 0.78)
+            if other:
+                return other, f"title read: {title_text.strip()!r}"
             why = hallows_reason(title_text, "")
             if why:
-                return True, f"{why} | read: {title_text.strip()!r}"
+                return "hallows", f"{why} | read: {title_text.strip()!r}"
     body = _crop(img, _top_centre(img, EVENT_BOX))
     body_text = ""
     if body is not None:
         for v in _variants(_pil(body), 2.0 / s):
             body_text += " " + _ocr(v, "--psm 6")
+            other = _other_event(title_text, OTHER_TITLE) or _other_event(body_text, OTHER_BODY)
+            if other:
+                return other, f"read: {(title_text + ' / ' + body_text).strip()[:160]!r}"
             why = hallows_reason(title_text, body_text)
             if why:
-                return True, f"{why} | read: {(title_text + ' / ' + body_text).strip()[:160]!r}"
-    return False, ""
+                return "hallows", f"{why} | read: {(title_text + ' / ' + body_text).strip()[:160]!r}"
+    return "", ""
+
+
+def hallows_event(img):
+    name, why = classify_event(img)
+    return name == "hallows", why
 
 
 def _has_word(text, words, cutoff=0.84, minlen=4):
@@ -271,14 +530,19 @@ def _same(a, b, tol=3.0):
     return a is not None and b is not None and a.shape == b.shape and float(np.abs(a - b).mean()) < tol
 
 
-def hallows_event_cached(img, cache, max_age=30.0):
+def event_cached(img, cache, max_age=30.0):
     th = _thumb(img, _top_centre(img, EVENT_BOX))
     old = cache.get("banner")
     if old and _same(old[0], th) and time.time() - old[2] < max_age:
         return old[1]
-    res = hallows_event(img)
+    res = classify_event(img)
     cache["banner"] = (th, res, time.time())
     return res
+
+
+def hallows_event_cached(img, cache, max_age=30.0):
+    name, why = event_cached(img, cache, max_age)
+    return name == "hallows", why
 
 
 def mutation_seen_cached(img, n, word, cache, world_every=3, max_age=30.0):

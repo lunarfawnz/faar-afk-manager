@@ -16,9 +16,11 @@ Hallow's Eve event, Anti-AFK and rejoining after a server shutdown.
 - **Multi-instance**: run as many clients as your PC handles, no separate multi-instance tool needed
 - **Cookie sign-in**: each account signs in with its `.ROBLOSECURITY` cookie, stored encrypted to your Windows user
 - **Private servers**: paste a private server link and every account joins it
-- **Auto rebirth** on a timer, including the rebirth 250 SACRIFICE pop-up (pauses and waits for you)
+- **Auto rebirth**: reads your cash and the cost so it only rebirths when you can afford it, and pauses at the
+  rebirth 250 SACRIFICE pop-up for you
 - **Boost shop**: buys the cash/gem potions you pick at each 5-minute restock, skipping `NO STOCK!` items
-- **Selene shop**: buys the potions you pick when she shows up, then visits her on every other account in turn
+- **Selene shop**: looks for her only while she's in town (:00 and :30), buys the potions you pick, then visits her on
+  every other account in turn
 - **Pick what to buy**: a switch for every Boost and Selene potion, recognised by colour so it works in any
   game language. Abilities are never bought, and the character Selene sometimes sells is skipped unless you switch it on
 - **Auto ability**: presses your ability key (V by default) whenever the ability button is ready
@@ -31,7 +33,9 @@ Hallow's Eve event, Anti-AFK and rejoining after a server shutdown.
   retries if the server isn't back yet, and closes the Welcome Back pop-up. It reads the pop-up and Roblox's
   own log files, so it also works on small tiled windows
 - **Window layout**: tiles the alts on any monitor and maximizes the ones you don't tile
-- **Performance**: low graphics (allowlisted Fast Flags only), lower CPU priority and memory trimming for alts
+- **Performance**: low graphics, Roblox FPS cap, lower CPU priority, memory trimming, and optional restarts every
+  few hours or when RAM runs low
+- **Pop-ups**: closes Join Event (X) and claims Daily Rewards by itself
 
 ### It never spends Robux
 
@@ -39,6 +43,10 @@ Hallow's Eve event, Anti-AFK and rejoining after a server shutdown.
 - Before every single click the app checks for Roblox's purchase pop-up. If one is open, nothing gets
   clicked except its **X**. The Buy button is never touched.
 - The Welcome Back "triple your cash" offer is closed with its X, never YES.
+
+## How to use
+
+Everything is also explained inside the app on the **❓ How to use** page.
 
 ## Requirements
 
@@ -129,8 +137,8 @@ mutation instead, it's swapped out straight away. When nobody is left, nothing i
 
 Safety checks:
 - **Before the end**: it reads the event's countdown and puts the character away 4 seconds before
-  0:00, so a last-second catch can't mutate it. The timer needs a fairly big window (about 1500 px
-  wide); on small windows the character is put away when the banner goes.
+  0:00 (longer when several accounts are holding), so a last-second catch can't mutate it. The timer
+  needs a fairly big window; small windows use the timer read on another account in the same event.
 - **Wrong event**: if two characters get mutations Hallow's Eve never gives, it assumes this is a
   different event, stops and puts the character away.
 - **No double presses**: pressing a slot toggles it, so after each press it waits until the hotbar
@@ -139,7 +147,7 @@ Safety checks:
   after two looks agree.
 - **Low FPS**: if you cap Roblox's FPS, set **Roblox FPS limit** so key presses last long enough.
 
-A counter is saved per account: events since the last Dracula, total events and total Draculas.
+The put-away lead grows with how many accounts are holding a character. A counter is saved per account: events since the last Dracula, total events and total Draculas.
 Each event ends with a line in the log saying what happened to every character it held.
 
 ### Other languages
@@ -268,6 +276,9 @@ app/
   purchase.py             Robux pop-up detection
   roblox.py               sign-in and launching
   rlogs.py                reads Roblox's log files to spot disconnects
+  popups.py               Join Event / Daily Rewards pop-ups, hotbar loaded check
+  money.py                reads cash and the rebirth cost
+  guide.py                the in-app How to use text
   remote.py               phone remote (web server, PIN sign-in, notifications)
   webpush.py              sends notifications to phones
   web/                    the phone app

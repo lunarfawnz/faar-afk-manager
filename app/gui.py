@@ -17,7 +17,7 @@ from . import win, roblox
 from .engine import Engine
 from .storage import (load_accounts, save_accounts, load_settings, save_settings, Account,
                       DATA_DIR, protect)
-from . import builtin, hallows, optimize, update, ability, items, engine, remote
+from . import builtin, hallows, optimize, update, ability, items, engine, remote, guide
 from .version import __version__
 
 BG = "#0e1016"
@@ -126,7 +126,7 @@ class App(ctk.CTk):
         self.content.grid_rowconfigure(0, weight=1)
 
         self._page_makers = {"accounts": AccountsPage, "automation": AutomationPage, "log": LogPage,
-                             "remote": RemotePage}
+                             "remote": RemotePage, "help": HelpPage}
         self.pages = {}
         self._current = None
         self.show("accounts")
@@ -228,6 +228,13 @@ class App(ctk.CTk):
         if n and not quiet:
             self.log("Low graphics " + ("turned on" if low else "turned off") +
                      ". Restart the Roblox clients for it to take effect.")
+        try:
+            msg = optimize.apply_fps_cap(self.settings.get("roblox_fps_cap", 0), self.settings)
+            if msg:
+                save_settings(self.settings)
+                self.log(msg + " It applies to Roblox windows opened from now on.")
+        except Exception as e:
+            self.log(f"Couldn't change Roblox's FPS setting: {e}", level="warn")
 
     def _optimize_tick(self):
         if not win.IS_WIN:
@@ -441,7 +448,7 @@ class App(ctk.CTk):
 
         self.nav = {}
         items = [("accounts", "👥   Accounts"), ("automation", "⚙️   Settings"),
-                 ("log", "📜   Activity log"), ("remote", "📱   Phone remote")]
+                 ("log", "📜   Activity log"), ("remote", "📱   Phone remote"), ("help", "❓   How to use")]
         for i, (key, label) in enumerate(items):
             b = ctk.CTkButton(sb, text=label, anchor="w", font=F(14), height=42, corner_radius=10,
                               fg_color="transparent", hover_color=CARD, text_color=TEXT,
@@ -1057,6 +1064,9 @@ SETTINGS_FORM = [
          "The account must stand at the boosts stand: it checks for the 'Boosts Store' prompt, then presses E."),
     ]),
     ("Selene", [
+        ("selene_clock", "Only look for her while she's in town", bool,
+         "She arrives every hour at :00 and :30 and stays 5 minutes. With this on, the app only looks for her "
+         "then, and doesn't start a new visit in her last 50 seconds so nobody gets cut off."),
         ("selene_check_s", "Look for her every (s)", float, "Your AFK spot has to be near where she appears."),
         ("selene_cooldown_min", "After buying, ignore her for (min)", float, ""),
         ("selene_turn_wait_s", "Selene round: look for her on each account for (s)", float,
@@ -1077,6 +1087,10 @@ SETTINGS_FORM = [
          "New potions the game adds later. Off: they're skipped and named in the log so you know."),
     ]),
     ("Rebirth", [
+        ("rebirth_read_cash", "Only open the rebirth menu when you can afford it", bool,
+         "Reads your cash (bottom left) and the rebirth cost, so the menu isn't opened, and no 'not enough "
+         "cash' Robux pop-up shows, when you can't rebirth yet. Falls back to the old way if the numbers "
+         "can't be read."),
         ("rebirth_every_min", "Try rebirth every (min)", float,
          "If you can't afford it, the 'Skip Rebirth' Robux pop-up is closed and it tries again later."),
         ("rebirth_popup_wait_s", "Watch for 'Skip Rebirth' pop-up for (s)", float,
@@ -1112,9 +1126,11 @@ SETTINGS_FORM = [
          "When the held character gets the mutation below, hold the next unmutated one. A character that gets "
          "a different mutation is always swapped out."),
         ("mutation_word", "Mutation to wait for", str, "Dracula by default."),
-        ("hallows_end_lead_s", "Put the character away this many seconds before the event ends", float,
-         "Reads the event's countdown so a last-second catch can't mutate it. Needs a fairly big window "
-         "(about 1500 px wide or more) to read the timer; otherwise it's put away when the banner goes. 0 = off."),
+        ("hallows_end_lead_s", "Put the character away at least this many seconds before the event ends", float,
+         "Reads the event's countdown so a last-second catch can't mutate it. The real lead grows by itself "
+         "with how many accounts are holding a character and how long a press takes (up to 45 s). Needs a "
+         "fairly big window to read the timer; small windows use the timer read on another account in the "
+         "same event, or put away when the banner goes. 0 = off."),
     ]),
     ("General", [
         ("anti_afk_min", "Anti-AFK after idle (min)", float,
@@ -1134,6 +1150,14 @@ SETTINGS_FORM = [
         ("rejoin_if_closed", "Also rejoin if Roblox closes or crashes", bool,
          "With Rejoin on, an account whose Roblox window closes by itself is launched again. Use the "
          "Close button in this app to close an account for good."),
+        ("roblox_fps_cap", "Cap Roblox's FPS at (0 = leave it alone)", int,
+         "Writes Roblox's own 'Maximum Frame Rate' setting before each launch, which saves a lot of CPU and some "
+         "RAM. Roblox's menu offers 30, 60, 75, 120, 144 and 240; 30 is a good AFK value. Set 0 to put back what "
+         "Roblox had before. Key presses are held long enough for this FPS automatically."),
+        ("restart_every_h", "Restart each Roblox every (hours, 0 = off)", float,
+         "Closes and reopens each account after this many hours, one at a time, to free the memory Roblox "
+         "piles up over long AFK runs. It waits until the account isn't busy (Hallow's Eve, Selene, a "
+         "rebirth or a pop-up)."),
         ("game_fps", "Roblox FPS limit", float,
          "If you cap Roblox's FPS low to save CPU (5-15 FPS), put that number here so key presses and "
          "clicks are held long enough for the game to notice them. Leave 60 if you don't cap it."),
@@ -1257,6 +1281,8 @@ class AutomationPage(ctk.CTkFrame):
                 self.app.log("Auto ability: the mouse wasn't over a Roblox window. Try again.", level="warn")
                 return
             self.app.settings["ability_pos"] = [round(fx, 4), round(fy, 4)]
+            _, _, cw, ch = win.client_rect(acc.hwnd)
+            self.app.settings["ability_ref"] = [int(cw), int(ch)]
             save_settings(self.app.settings)
             self.app.ui(self._ability_label)
             self.app.log(f"Auto ability: button marked on {acc.username}'s window ({fx * 100:.1f}%, {fy * 100:.1f}%).")
@@ -1288,7 +1314,7 @@ class AutomationPage(ctk.CTkFrame):
             if img is None or not ability.valid_pos(pos):
                 self.app.log("Auto ability: couldn't read the window.", acc, "warn")
                 return
-            frac = ability.ready_fraction(img, pos)
+            frac = ability.ready_fraction(img, pos, self.app.settings.get("ability_ref"))
             state = "READY (green)" if frac >= ability.READY_FRACTION else "not ready (grey / on cooldown)"
             self.app.log(f"Auto ability test: green share {frac:.2f} -> {state}. Needs {ability.READY_FRACTION:.2f} "
                          "to count as ready. (A window that's behind others may show an old picture; test with the "
@@ -1594,6 +1620,31 @@ class RemotePage(ctk.CTkFrame):
         if messagebox.askyesno("Sign out all phones", "Every phone will need the PIN again. Continue?"):
             self.r.sign_out_all()
             self.app.log("Phone remote: signed out every phone.")
+
+
+class HelpPage(ctk.CTkFrame):
+    def __init__(self, master, app):
+        super().__init__(master, fg_color=BG, corner_radius=0)
+        self.app = app
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        body = ctk.CTkScrollableFrame(self, fg_color=BG, corner_radius=0)
+        body.grid(row=0, column=0, sticky="nsew")
+        body.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(body, text="How to use", font=F(26, "bold"), text_color=TEXT).grid(
+            row=0, column=0, sticky="w", padx=28, pady=(26, 0))
+        ctk.CTkLabel(body, text="Everything FAAR Manager does and how to set it up.", font=F(12),
+                     text_color=MUTED).grid(row=1, column=0, sticky="w", padx=28, pady=(2, 10))
+        for i, (title, paras) in enumerate(guide.GUIDE):
+            card = ctk.CTkFrame(body, fg_color=CARD, corner_radius=14, border_width=1, border_color=BORDER)
+            card.grid(row=2 + i, column=0, sticky="ew", padx=28, pady=6)
+            card.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(card, text=title, font=F(15, "bold"), text_color=TEXT).grid(
+                row=0, column=0, sticky="w", padx=16, pady=(12, 4))
+            for j, para in enumerate(paras):
+                ctk.CTkLabel(card, text="•  " + para, font=F(12), text_color=MUTED, wraplength=640,
+                             justify="left", anchor="w").grid(
+                    row=1 + j, column=0, sticky="w", padx=16, pady=(0, 12 if j == len(paras) - 1 else 4))
 
 
 class LogPage(ctk.CTkFrame):
