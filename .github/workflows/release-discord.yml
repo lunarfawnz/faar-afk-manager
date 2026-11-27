@@ -3,6 +3,12 @@ name: Announce release on Discord
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to announce (like v1.4.0). Leave empty for the latest release."
+        required: false
+        default: ""
 
 jobs:
   announce:
@@ -10,22 +16,30 @@ jobs:
     steps:
       - name: Post the release notes to Discord
         env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           ROLE_ID: ${{ secrets.DISCORD_ROLE_ID }}
-          TAG: ${{ github.event.release.tag_name }}
-          NAME: ${{ github.event.release.name }}
-          URL: ${{ github.event.release.html_url }}
-          BODY: ${{ github.event.release.body }}
+          TAG_IN: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
+          set -e
+          if [ -n "$TAG_IN" ]; then
+            gh release view "$TAG_IN" --json tagName,name,url,body > release.json
+          else
+            gh release view --json tagName,name,url,body > release.json
+          fi
           python3 - <<'PY'
-          import json, os, time, urllib.request
+          import json, os, sys, time, urllib.error, urllib.request
 
-          webhook = os.environ["WEBHOOK"]
+          webhook = os.environ.get("WEBHOOK", "").strip()
+          if not webhook:
+              sys.exit("The DISCORD_WEBHOOK secret is missing or empty (Settings > Secrets and variables > Actions).")
           role = os.environ.get("ROLE_ID", "").strip()
-          tag = os.environ["TAG"]
-          title = os.environ.get("NAME") or tag
-          url = os.environ["URL"]
-          body = (os.environ.get("BODY") or "No notes.").replace("\r\n", "\n").strip()
+          rel = json.load(open("release.json"))
+          tag = rel["tagName"]
+          title = rel.get("name") or tag
+          url = rel["url"]
+          body = (rel.get("body") or "No notes.").replace("\r\n", "\n").strip()
 
           chunks, cur = [], ""
           for line in body.split("\n"):
@@ -41,12 +55,15 @@ jobs:
               req = urllib.request.Request(webhook, data=json.dumps(payload).encode(),
                                            headers={"Content-Type": "application/json",
                                                     "User-Agent": "faar-release-bot"})
-              urllib.request.urlopen(req).read()
+              try:
+                  urllib.request.urlopen(req).read()
+              except urllib.error.HTTPError as e:
+                  sys.exit(f"Discord said {e.code}: {e.read().decode(errors='replace')[:300]}")
               time.sleep(1)
 
           ping = f"<@&{role}> " if role else ""
           head = (f"{ping}**FAAR Manager {tag} is out!**\n"
-                  "Open FAAR Manager and click the green **Update** button in the sidebar to update "
+                  f"Open FAAR Manager and click **Update to {tag}** in the sidebar to update "
                   f"(or download it here: {url}).")
           for i, chunk in enumerate(chunks):
               payload = {
@@ -57,4 +74,5 @@ jobs:
               if i == 0:
                   payload["content"] = head
               post(payload)
+          print(f"Announced {tag} in {len(chunks)} message(s).")
           PY
