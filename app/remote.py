@@ -28,6 +28,9 @@ KINDS = {
     "needs_you": "Needs you",
     "disconnects": "Disconnects and rejoins",
     "stopped": "Automation stopped or app crashed",
+    "rare_god": "God catches",
+    "rare_omniscient": "Omniscient catches",
+    "rare_apex": "Apex catches",
 }
 CURRENT = None
 

@@ -50,7 +50,7 @@ GUIDE = [
         "When one account spots her, it shops first, then every other account with Selene on is visited one "
         "at a time. Pick what to buy in Settings → Selene items. Abilities are never bought, and the "
         "character she sometimes sells is skipped unless you switch it on.",
-        "Her shop closes as soon as her bottom row (Sinister and Lucrative Realization) is done.",
+        "Her shop closes as soon as her bottom row (Big and Huge Fertilizer) is done.",
     ]),
     ("Auto rebirth", [
         "On a timer, it reads your cash and the rebirth cost. If you can't afford it yet, the menu isn't even "
@@ -86,6 +86,13 @@ GUIDE = [
         "Join Event and Daily Rewards pop-ups are cleared by themselves (Join Event with its X, Daily Rewards "
         "by pressing Claim).",
     ]),
+    ("Rare catches", [
+        "When a God, Omniscient or Apex catch cutscene plays on any account, the log says so and your phone gets "
+        "a notification with the character's name (read from the 'You have caught' message). Each tier can be "
+        "switched off under 📱 Phone remote → Notify me about.",
+        "It's spotted by watching the screen, so a cutscene can be missed if that account is busy in a shop "
+        "at that moment.",
+    ]),
     ("Saving CPU and RAM", [
         "Low graphics and lower priority for alts are on the Settings page.",
         "Cap Roblox's FPS: writes Roblox's own Maximum Frame Rate before each launch (30 is a good AFK value). "
@@ -96,7 +103,7 @@ GUIDE = [
     ]),
     ("Phone remote", [
         "Control everything from your phone and get notifications (Dracula, pop-ups that need you, "
-        "disconnects, automation stopped). Open 📱 Phone remote and follow its 4 steps: install Tailscale on "
+        "disconnects, automation stopped, and God, Omniscient or Apex catches, each with its own switch). Open 📱 Phone remote and follow its 4 steps: install Tailscale on "
         "the PC and phone, set a PIN, turn it on, then open the link on your phone and add it to your home "
         "screen.",
         "It only works inside your own Tailscale network and needs your PIN. Your Roblox logins never leave "

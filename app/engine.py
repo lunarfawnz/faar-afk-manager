@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from . import win, purchase, builtin, hallows, route, roblox, ability, items, rlogs, storage, popups, money
+from . import win, purchase, builtin, hallows, route, roblox, ability, items, rlogs, storage, popups, money, rare
 
 
 CLICK_HOLD = 0.12
@@ -84,6 +84,11 @@ class AccState:
     hold: str = ""
     next_popup_check: float = 0
     next_other_popup: float = 0
+    next_rare: float = 0
+    rare_hits: list = field(default_factory=list)
+    rare_pending: object = None
+    rare_reads: list = field(default_factory=list)
+    rare_cool: float = 0
     next_sacpop_check: float = 0
     next_hold_check: float = 0
     next_disc_check: float = 0
@@ -624,6 +629,10 @@ class Engine:
                 if xy:
                     return [("popup", "daily", xy)]
 
+        if now >= st.next_rare and any(s.get(f"notify_rare_{k}", True) for k in rare.TIERS):
+            st.next_rare = now + (2.0 if st.rare_pending else 1.0)
+            self._rare_check(acc, st, s, shot())
+
         if f.get("rebirth") and "rebirth" not in st.disabled and now >= st.next_rebirth:
             st.next_rebirth = now + max(1, float(s["rebirth_every_min"])) * 60
             jobs.append(("rebirth",))
@@ -680,6 +689,40 @@ class Engine:
         if f.get("anti_afk") and not jobs and now - st.last_input >= float(s["anti_afk_min"]) * 60:
             jobs.append(("anti_afk",))
         return jobs
+
+    def _rare_check(self, acc, st, s, img):
+        if img is None:
+            return
+        now = time.time()
+        if st.rare_pending:
+            kind, t0 = st.rare_pending
+            got = rare.caught_text(img)
+            if got and got[1] and rare.TIERS[kind].lower()[:3] in got[0].lower():
+                st.rare_reads.append(got[1])
+            if len(st.rare_reads) >= 2 or (st.rare_reads and now - t0 > 15) or now - t0 > rare.NAME_WAIT:
+                self._rare_done(acc, st, s, kind)
+            return
+        if now < st.rare_cool:
+            return
+        kind = rare.cutscene(img)
+        if not kind:
+            return
+        st.rare_hits = [(t, k) for t, k in st.rare_hits if now - t < rare.VOTE_WINDOW and k == kind] + [(now, kind)]
+        if len(st.rare_hits) >= rare.VOTES:
+            st.rare_hits, st.rare_reads = [], []
+            st.rare_pending = (kind, now)
+            self.log(f"{rare.TIERS[kind]} catch cutscene is playing!", acc)
+
+    def _rare_done(self, acc, st, s, kind):
+        tier = rare.TIERS[kind]
+        names = [n for n in st.rare_reads if n]
+        name = max(names, key=lambda n: (sum(n in o for o in names), -len(n))) if names else ""
+        st.rare_pending, st.rare_reads = None, []
+        st.rare_cool = time.time() + rare.COOLDOWN
+        body = f"Caught {name} ({tier})!" if name else f"An {tier} catch cutscene played." if tier[0] in "AEIOU" \
+            else f"A {tier} catch cutscene played."
+        self.log(f"Rare catch: {name} ({tier})." if name else f"Rare catch: {tier} (couldn't read the name).", acc)
+        self.notify(f"rare_{kind}", f"{tier} catch!", body, acc)
 
     def _hallows_decide(self, acc, st, s, img):
         slots = char_slots(s)
@@ -1212,7 +1255,7 @@ SCROLL_NOTCH = 100
 SCROLL_MIN_NOTCHES = 2
 SCROLL_MAX_NOTCHES = 8
 SCROLL_TARGET = 0.55
-LAST_ROW = {"selene": ("sinister", "lucrative")}
+LAST_ROW = {"selene": ("bigfert", "hugefert")}
 
 
 def _ends_list(shop, item, buttons, ids, x, y, sc):

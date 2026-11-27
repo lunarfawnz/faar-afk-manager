@@ -191,6 +191,9 @@ DEFAULT_SETTINGS = {
     "notify_needs_you": True,
     "notify_disconnects": True,
     "notify_stopped": True,
+    "notify_rare_god": True,
+    "notify_rare_omniscient": True,
+    "notify_rare_apex": True,
     "mutation_cycle": True,
     "mutation_word": "dracula",
 

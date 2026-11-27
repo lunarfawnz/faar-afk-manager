@@ -17,7 +17,9 @@ SELENE_ITEMS = [
     ("luck3", "Luck Potion Lvl 3"), ("luck2", "Luck Potion Lvl 2"), ("heavens", "Heaven's Collide Potion"),
     ("meteorite", "Meteorite Potion"), ("food", "Food Potion"), ("honey", "Honey Potion"),
     ("sinister", "Sinister Potion"), ("lucrative", "Lucrative Realization Potion"),
+    ("bigfert", "Big Fertilizer"), ("hugefert", "Huge Fertilizer"),
 ]
+FERTILIZERS = ("bigfert", "hugefert")
 
 FINGERPRINTS = {
     "boost": {
@@ -117,6 +119,11 @@ def icon_kind(f):
     return "other"
 
 
+def is_fertilizer(f):
+    # A beige sack with a green sprout: far more sack colour than any potion's cork
+    return f is not None and f["cork"] >= 0.05 and f["dark"] >= 0.05 and 45 <= f["lh"] <= 85 and f["ls"] >= 100
+
+
 def _hue_d(a, b):
     d = abs(a - b) % 180
     return min(d, 180 - d)
@@ -194,11 +201,53 @@ def identify(img, buttons, shop):
         if ik != "potion":
             out.append(("other", rect, f))
             continue
+        if shop == "selene" and is_fertilizer(f):
+            out.append(("fert", rect, f))
+            continue
         name, _ = match_potion(f, shop)
         out.append((name or "unknown", rect, f))
     if shop == "boost":
         _levels(img, buttons, out)
+    else:
+        _fertilizers(img, buttons, out)
     return out
+
+
+def fertilizer_title(img, rect, sc):
+    if not builtin.ocr_ready():
+        return None
+    sub = _region(img, rect, sc, 0.05, 0.95, 0.0, 0.24)
+    if sub is None or sub.size == 0 or rect[1] < 0:
+        return None
+    f = max(2.0, 2.0 / max(sc, 0.3))
+    big = cv2.resize(sub, None, fx=f, fy=f, interpolation=cv2.INTER_CUBIC)
+    a = big.astype(np.int16)
+    tess = builtin._OCR["mod"]
+    for v in (np.where(a.min(axis=2) > 200, 0, 255).astype(np.uint8), cv2.cvtColor(big, cv2.COLOR_BGR2GRAY)):
+        try:
+            txt = re.sub(r"[^a-z]", "", tess.image_to_string(v, config="--psm 7").lower())
+        except Exception:
+            continue
+        if re.search(r"h[uv][aeqg]{1,2}e?f", txt) or txt.startswith("hu"):
+            return "hugefert"
+        if re.search(r"b[il1][agq]f", txt) or txt.startswith("bi"):
+            return "bigfert"
+    return None
+
+
+def _fertilizers(img, buttons, out):
+    idxs = [i for i, (name, rect, f) in enumerate(out) if name == "fert"]
+    rows = {}
+    for i in idxs:
+        rows.setdefault(round(out[i][1][3] / max(8, 40 * buttons[i][4])), []).append(i)
+    for row in rows.values():
+        row.sort(key=lambda i: out[i][1][0])
+        for rank, i in enumerate(row):
+            _, rect, f = out[i]
+            name = fertilizer_title(img, rect, buttons[i][4])
+            if name is None and len(row) == 2:
+                name = FERTILIZERS[rank]
+            out[i] = (name or "unknown", rect, f)
 
 
 def _levels(img, buttons, out):

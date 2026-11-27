@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.4.1
+
+- Selene now sells Big Fertilizer and Huge Fertilizer under her potions. Both are recognised and can be switched on or off in Settings → Selene items (on by default).
+- Selene's shop now closes after the fertilizer row, so the new items are no longer missed.
+- New phone notifications for rare catches: God, Omniscient and Apex. The app spots each tier's cutscene and reads the character's name from the "You have caught" message. Each tier has its own switch under Phone remote → Notify me about, and the catch is written in the Activity log too.
+
 ## v1.4.0
 
 ### New
