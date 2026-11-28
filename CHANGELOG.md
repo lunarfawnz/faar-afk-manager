@@ -10,6 +10,7 @@
 - The "different event" safety stop now needs 3 unexpected mutations instead of 2, so one misread can't end Hallow's Eve early.
 - Fertilizers in Selene's shop are no longer mistaken for being in stock. Their "x1.25 Food" / "x2 Food" lines sit where other items show their stock count; now only "OUT OF STOCK" or a real "x Left" count is believed for them, and if neither can be read it makes at most 3 careful clicks.
 - Rare catch notifications are more reliable: windows are now watched for cutscenes on their own, about once a second, so a shop visit, rejoin or slow check on another account can no longer make one get missed. Two rare catches close together on the same account are both reported, and each notification now says what time the catch happened.
+- Rare catch names are read more reliably. The "You have caught" message types itself out letter by letter, so the app now keeps reading it until it's finished (no more cut-off names), picks the reading most frames agree on, and no longer mistakes the "!" after the name for a letter.
 
 ## v1.4.1
 

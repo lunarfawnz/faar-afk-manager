@@ -90,6 +90,7 @@ class AccState:
     rare_pending: object = None
     rare_reads: list = field(default_factory=list)
     rare_cool: float = 0
+    rare_first: float = 0.0
     next_sacpop_check: float = 0
     next_hold_check: float = 0
     next_disc_check: float = 0
@@ -704,7 +705,7 @@ class Engine:
                         st = self.states.get(acc.user_id)
                         if st is None or time.time() < st.next_rare:
                             continue
-                        st.next_rare = time.time() + (2.0 if st.rare_pending else 0.8)
+                        st.next_rare = time.time() + (1.0 if st.rare_pending else 0.8)
                         self._rare_check(acc, st, s, win.capture_window(acc.hwnd))
             except Exception:
                 pass
@@ -716,10 +717,14 @@ class Engine:
         now = time.time()
         if st.rare_pending:
             kind, t0 = st.rare_pending
-            got = rare.caught_text(img)
-            if got and got[1] and rare.TIERS[kind].lower()[:3] in got[0].lower():
-                st.rare_reads.append(got[1])
-            if len(st.rare_reads) >= 2 or (st.rare_reads and now - t0 > 15) or now - t0 > rare.NAME_WAIT:
+            for tier, name in rare.caught_texts(img):
+                if name and rare.tier_matches(tier, kind):
+                    st.rare_reads.append(name)
+                    st.rare_first = st.rare_first or now
+            if st.rare_reads:
+                st.next_rare = now + 0.4  # the name is on screen: read it a few more times while it's there
+            if (st.rare_first and now - st.rare_first >= rare.READ_FOR and len(st.rare_reads) >= 3) \
+                    or now - t0 > rare.NAME_WAIT:
                 self._rare_done(acc, st, s, kind)
             return
         if now < st.rare_cool:
@@ -735,9 +740,8 @@ class Engine:
 
     def _rare_done(self, acc, st, s, kind):
         tier = rare.TIERS[kind]
-        names = [n for n in st.rare_reads if n]
-        name = max(names, key=lambda n: (sum(n in o for o in names), -len(n))) if names else ""
-        st.rare_pending, st.rare_reads = None, []
+        name = rare.best_name(st.rare_reads)
+        st.rare_pending, st.rare_reads, st.rare_first = None, [], 0.0
         st.rare_cool = time.time() + rare.COOLDOWN
         at = time.strftime("%I:%M %p").lstrip("0")
         body = (f"Caught {name} ({tier}) at {at}!" if name else

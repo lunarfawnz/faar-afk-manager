@@ -13,6 +13,7 @@ TIERS = {"omniscient": "Omniscient", "apex": "Apex", "god": "God"}
 VOTES = 2
 VOTE_WINDOW = 12.0
 NAME_WAIT = 100.0
+READ_FOR = 5.0  # keep reading this long after the name first shows up
 COOLDOWN = 40.0
 
 
@@ -61,34 +62,98 @@ def cutscene(img):
     return None if _hud(img) else kind
 
 
-CAUGHT_RE = re.compile(r"caught\W*\[?\s*([A-Za-z]{3,14})\s*[\]\)|}]?\s*([A-Za-z][A-Za-z' .-]{1,40})")
+CAUGHT_RE = re.compile(r"caught\W*\[?\s*([A-Za-z]{2,14})\s*[\]\)|}]?\s*(.{1,80})")
+JOINERS = ("of", "the", "and", "de", "no")
+BANG = "lI1i|!"  # how the "!" after the name tends to come out
 
 
 def clean_name(raw):
-    """Keeps the part that looks like a character name: Capitalised words, with small joining words like 'of'."""
+    """Keeps the character name: the last run of Capitalised words (small joining words like 'of' allowed).
+    The name is the last thing before the "!", and stray marks from the background come before it."""
     raw = re.split(r"[!}\])|]", raw)[0]
     words = re.findall(r"[A-Za-z']+", raw)
-    best, cur = [], []
+    runs, cur = [], []
     for wd in words:
         if wd[0].isupper() and len(wd) >= 3:
             cur.append(wd)
-        elif cur and wd in ("of", "the", "and", "de", "no"):
+        elif cur and wd in JOINERS:
             cur.append(wd)
         else:
-            if len(cur) > len(best):
-                best = cur
+            if cur:
+                runs.append(cur)
             cur = []
-    if len(cur) > len(best):
-        best = cur
-    while best and best[-1] in ("of", "the", "and", "de", "no"):
+    if cur:
+        runs.append(cur)
+    if not runs:
+        return ""
+    best = runs[-1]
+    while best and best[-1] in JOINERS:
         best.pop()
     return " ".join(best)
 
 
-def caught_text(img):
-    """Reads the "You have caught [Tier] Name!" notice. Returns (tier, name) or None."""
+def caught_texts(img):
+    """Every reading of the "You have caught [Tier] Name!" notice in this frame, as (tier, name) pairs."""
     if img is None or not builtin.ocr_ready():
-        return None
+        return []
+    h, w = img.shape[:2]
+    sub = img[int(h * .60):int(h * .80), int(w * .36):int(w * .70)]
+    if sub.size == 0:
+        return []
+    f = max(1.5, 2.0 * 1080.0 / max(1, h))
+    big = cv2.resize(sub, None, fx=f, fy=f, interpolation=cv2.INTER_CUBIC)
+    hsv = cv2.cvtColor(big, cv2.COLOR_BGR2HSV)
+    tess = builtin._OCR["mod"]
+    out = []
+    for var in (np.where((hsv[..., 1] > 90) & (hsv[..., 2] > 150), 0, 255).astype(np.uint8),
+                255 - cv2.cvtColor(big, cv2.COLOR_BGR2GRAY),
+                np.where(big.max(axis=2) > 200, 0, 255).astype(np.uint8)):
+        try:
+            txt = tess.image_to_string(var, config="--psm 6")
+        except Exception:
+            continue
+        flat = " ".join(t.strip() for t in txt.splitlines() if t.strip())
+        m = CAUGHT_RE.search(flat)
+        if m:
+            name = clean_name(m.group(2))
+            if name.lower() in {t.lower() for t in TIERS.values()}:
+                name = ""
+            out.append((m.group(1).strip().title(), name))
+    return out
+
+
+def caught_text(img):
+    got = caught_texts(img)
+    named = [g for g in got if g[1]]
+    return (named or got or [None])[0]
+
+
+def tier_matches(read, kind):
+    want = TIERS[kind].lower()
+    got = re.sub(r"[^a-z]", "", read.lower())
+    if not got:
+        return False
+    if want in got or got.startswith(want[:2]):
+        return True
+    import difflib
+    return difflib.SequenceMatcher(None, got[:len(want) + 1], want).ratio() >= 0.6
+
+
+def best_name(reads):
+    """reads: names in the order they were read. The notice types itself out letter by letter, so early reads
+    are cut short; the final text is the reading that agrees best with the later ones. A trailing letter that
+    other reads don't have is the "!" being misread, so it's dropped."""
+    import difflib
+    tiers = {t.lower() for t in TIERS.values()}
+    names = [n for n in reads if n and len(n) >= 3 and n.lower() not in tiers]
+    if not names:
+        return ""
+    late = names[len(names) // 2:]
+    final = max(set(late), key=lambda n: (sum(difflib.SequenceMatcher(None, n, o).ratio() for o in late),
+                                         late.count(n)))
+    if len(final) > 3 and final[-1] in BANG and final[:-1] in names:
+        final = final[:-1]
+    return final
     h, w = img.shape[:2]
     sub = img[int(h * .60):int(h * .80), int(w * .38):int(w * .68)]
     if sub.size == 0:
