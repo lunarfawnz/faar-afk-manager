@@ -245,17 +245,19 @@ def shop_view(img):
 STOCK_BOX = (-25, -110, 295, -32)
 
 
-def stock_status(img, x, y, sc):
+def stock_status(img, x, y, sc, strict=False):
+    """strict: the card has other numbers where the stock count would be (fertilizers: "x1.25 Food", "x2 Food"),
+    so only "OUT OF STOCK" or a count that says "Left" is believed."""
     if not ocr_ready():
         return "ok", None
     l, t, r, b = STOCK_BOX
     texts = ocr_texts(img, (x + l * sc, y + t * sc, x + r * sc, y + b * sc), sc)
-    counts = [n for n in (_stock_left(t) for t in texts) if n is not None]
+    if any(_says_out_of_stock(t) for t in texts):
+        return "out", None
+    counts = [n for n in (_stock_left(t, strict) for t in texts) if n is not None]
     if counts:
         n = min(counts)
         return ("out", None) if n == 0 else ("left", n)
-    if any(_says_out_of_stock(t) for t in texts):
-        return "out", None
     if any("owned" in re.sub(r"[^a-z]", "", _clean_ocr(t)) for t in texts):
         return "out", None
     return "ok", None
@@ -375,12 +377,16 @@ def _says_out_of_stock(text):
     return False
 
 
-def _stock_left(text):
-    t = text.lower().replace(" ", "")
-    m = re.search(r"(?<![0-9])x([0-9]{1,3})(?![0-9])", t)
-    if m:
-        return int(m.group(1))
-    for pat in (r"st[o0]ck[:x]?([0-9]{1,3})", r"([0-9]{1,3})(?:left|inst[o0]ck)"):
+def _stock_left(text, strict=False):
+    t = re.sub(r"\s+", "", text.lower())
+    # "x5 Left!" is a stock count; "x1.25 Food" / "x2 Food" (fertilizer effects) are not, even when the
+    # reader splits them over two lines or drops the dot
+    t = re.sub(r"x[0-9][0-9.,-]*\W{0,3}f[o0][o0]d", "", t)
+    if not strict:
+        m = re.search(r"(?<![0-9])x([0-9]{1,3})(?![0-9]|[.,][0-9])", t)
+        if m:
+            return int(m.group(1))
+    for pat in (r"st[o0]ck[:x]?([0-9]{1,3})", r"([0-9]{1,3})\W?(?:left|inst[o0]ck)"):
         m = re.search(pat, t)
         if m:
             return int(m.group(1))

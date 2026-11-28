@@ -27,11 +27,64 @@ def hud_scale(img):
     return min(w / REF_W, h / REF_H)
 
 
-def _top_centre(img, box):
+def _top_centre(img, box, dy=0.0):
     h, w = img.shape[:2]
     s = hud_scale(img)
     x0, y0, x1, y1 = box
-    return (w / 2 + (x0 - 960) * s, y0 * s, w / 2 + (x1 - 960) * s, y1 * s)
+    return (w / 2 + (x0 - 960) * s, (y0 + dy) * s, w / 2 + (x1 - 960) * s, (y1 + dy) * s)
+
+
+TIMER_MID = 150.0
+_dy_memo = {}
+
+
+def find_banner_dy(img):
+    """How far (in 1080p pixels) the event banner sits below where it normally is. The game sometimes draws it
+    further down, under the Shops/Plot/Fishing buttons. Found by reading the green "Event Duration" line."""
+    if img is None or not builtin.ocr_ready():
+        return None
+    h, w = img.shape[:2]
+    s = hud_scale(img)
+    x0, x1 = int(max(0, w / 2 - 260 * s)), int(min(w, w / 2 + 260 * s))
+    sub = img[:int(h * 0.6), x0:x1]
+    if sub.size == 0:
+        return None
+    hsv = cv2.cvtColor(sub, cv2.COLOR_BGR2HSV)
+    green = (hsv[..., 0] >= 35) & (hsv[..., 0] <= 85) & (hsv[..., 1] >= 110) & (hsv[..., 2] >= 120)
+    if green.mean() < 0.001:
+        return None
+    k = 2.0 / max(s, 0.3)
+    mask = cv2.resize(np.where(green, 0, 255).astype(np.uint8), None, fx=k, fy=k, interpolation=cv2.INTER_NEAREST)
+    tess = builtin._OCR["mod"]
+    try:
+        d = tess.image_to_data(mask, config="--psm 11", output_type=tess.Output.DICT)
+    except Exception:
+        return None
+    best = None
+    for i, txt in enumerate(d["text"]):
+        c = re.sub(r"[^a-z]", "", txt.lower())
+        if len(c) >= 5 and difflib.SequenceMatcher(None, c, "duration").ratio() >= 0.7:
+            mid = (d["top"][i] + d["height"][i] / 2.0) / k
+            if best is None or mid < best:
+                best = mid
+    if best is None:
+        return None
+    return best / s - TIMER_MID
+
+
+def banner_dy(img, cache=None):
+    """Banner offset, remembered for a while (per account when a cache dict is given)."""
+    memo = cache if cache is not None else _dy_memo
+    now = time.time()
+    got = memo.get("banner_dy")
+    if got and now < got[1]:
+        return got[0]
+    dy = find_banner_dy(img)
+    if dy is None or abs(dy) < 20:
+        memo["banner_dy"] = (0.0, now + 5)
+        return 0.0
+    memo["banner_dy"] = (dy, now + 20)
+    return dy
 
 
 def _centre(img, box):
@@ -375,11 +428,13 @@ def _other_event(text, table, cutoff=0.82):
     return ""
 
 
-def classify_event(img):
+def classify_event(img, dy=None):
     if not builtin.ocr_ready():
         return "", "text reader not available"
     s = hud_scale(img)
-    title = _crop(img, _top_centre(img, TITLE_BOX))
+    if dy is None:
+        dy = banner_dy(img)
+    title = _crop(img, _top_centre(img, TITLE_BOX, dy))
     title_text = ""
     if title is not None:
         for v in _variants(_pil(title), 3.0 / s):
@@ -390,7 +445,7 @@ def classify_event(img):
             why = hallows_reason(title_text, "")
             if why:
                 return "hallows", f"{why} | read: {title_text.strip()!r}"
-    body = _crop(img, _top_centre(img, EVENT_BOX))
+    body = _crop(img, _top_centre(img, EVENT_BOX, dy))
     body_text = ""
     if body is not None:
         for v in _variants(_pil(body), 2.0 / s):
@@ -469,6 +524,83 @@ def _label_texts(img, n):
         yield _ocr(v, "--psm 7").strip()
 
 
+def slot_label(img, n):
+    """Looks for the [Mutation] tag above slot n without reading it.
+
+    Mutated characters get a bracketed name with a black outline between the stars and the slot; unmutated ones
+    have the stars right above the slot. Returns None if the area can't be seen, else
+    {"present": bool, "red": bool, "box": (x0, y0, x1, y1)}."""
+    l, t, _, _ = slot_box(img, n)
+    s = hud_scale(img)
+    h_img, w_img = img.shape[:2]
+    y0, y1 = int(round(t - 26 * s)), int(round(t + 1 * s))
+    x0, x1 = int(round(l - 10 * s)), int(round(l + 91 * s))
+    if y0 < 0 or x0 < 0 or x1 > w_img or y1 > h_img or y1 - y0 < 6 or x1 - x0 < 20:
+        return None
+    sub = img[y0:y1, x0:x1]
+    best = None
+    for thr in (55, 85):  # most tags have a black outline, a few (Complexity) a dark-coloured one
+        dark = (sub.max(axis=2) < thr).astype(np.uint8)
+        cnt, _, st, _ = cv2.connectedComponentsWithStats(dark, connectivity=8)
+        pieces = [st[i] for i in range(1, cnt) if 7 * s <= st[i][3] <= 26 * s and st[i][2] >= 3 * s]
+        for p in sorted(pieces, key=lambda b: -b[2]):
+            cy = p[1] + p[3] / 2.0
+            line = [b for b in pieces if abs(b[1] + b[3] / 2.0 - cy) <= max(3 * s, p[3] * 0.5)]
+            lx0 = min(b[0] for b in line)
+            lx1 = max(b[0] + b[2] for b in line)
+            cover = np.zeros(lx1 - lx0, bool)
+            for b in line:
+                cover[b[0] - lx0:b[0] - lx0 + b[2]] = True
+            if lx1 - lx0 >= 28 * s and cover.mean() >= 0.55:
+                best = (lx0, min(b[1] for b in line), lx1, max(b[1] + b[3] for b in line))
+                break
+        if best is not None:
+            break
+    if best is None:
+        return {"present": False, "red": False, "box": None}
+    bx0, by0, bx1, by1 = best
+    hsv = cv2.cvtColor(sub, cv2.COLOR_BGR2HSV).astype(np.int16)
+    inner = hsv[by0:by1, bx0:bx1][dark[by0:by1, bx0:bx1] == 0]
+    if len(inner) < 10 or (inner[:, 2] >= 110).mean() < 0.2:
+        return {"present": False, "red": False, "box": None}
+    m = max(2, int(3 * s))
+    bg = np.concatenate([hsv[by0:by1, max(0, bx0 - m):bx0].reshape(-1, 3), hsv[by0:by1, bx1:bx1 + m].reshape(-1, 3)])
+    px = inner[inner[:, 2] >= 110]
+    if len(bg):
+        bgh, bgs = float(np.median(bg[:, 0])), float(np.median(bg[:, 1]))
+        hd = np.minimum(np.abs(px[:, 0] - bgh), 180 - np.abs(px[:, 0] - bgh))
+        px = px[(hd > 8) | (np.abs(px[:, 1] - bgs) > 80)]
+    sat = px[px[:, 1] >= 90]
+    red = False
+    if len(sat) >= 6 and len(sat) >= 0.35 * len(px):
+        reds = ((sat[:, 0] <= 6) | (sat[:, 0] >= 172)).mean()
+        red = reds >= 0.5
+    return {"present": True, "red": bool(red), "box": (x0 + bx0, y0 + by0, x0 + bx1, y0 + by1)}
+
+
+def _keyed_texts(img, box, s):
+    """OCR of the tag using only pixels the colour of its letters, which works on any background."""
+    sub = _crop(img, (box[0] - 2, box[1] - 2, box[2] + 2, box[3] + 2))
+    if sub is None:
+        return
+    sc = 6.0 / max(s, 0.25)
+    big = cv2.resize(sub, None, fx=sc, fy=sc, interpolation=cv2.INTER_CUBIC)
+    v = big.max(axis=2)
+    dark = (v < 60).astype(np.uint8)
+    k = int(3 * sc / 2) | 1
+    near = cv2.dilate(dark, np.ones((k, k), np.uint8)) > 0
+    lab = cv2.cvtColor(big, cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(np.float32)
+    cand = ((v >= 110) & near & (dark == 0)).reshape(-1)
+    if cand.sum() < 20:
+        return
+    c = np.median(lab[cand], axis=0)
+    d = np.sqrt(((lab - c) ** 2).sum(1)).reshape(v.shape)
+    for thr in (45, 70):
+        m = np.where((d < thr) & near, 0, 255).astype(np.uint8)
+        m = cv2.copyMakeBorder(m, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)
+        yield _ocr(Image.fromarray(m), "--psm 7").strip()
+
+
 def slot_label_has(img, n, word):
     return any(fuzzy_in(t, word) for t in _label_texts(img, n))
 
@@ -531,11 +663,12 @@ def _same(a, b, tol=3.0):
 
 
 def event_cached(img, cache, max_age=30.0):
-    th = _thumb(img, _top_centre(img, EVENT_BOX))
+    dy = banner_dy(img, cache)
+    th = _thumb(img, _top_centre(img, EVENT_BOX, dy))
     old = cache.get("banner")
     if old and _same(old[0], th) and time.time() - old[2] < max_age:
         return old[1]
-    res = classify_event(img)
+    res = classify_event(img, dy)
     cache["banner"] = (th, res, time.time())
     return res
 
@@ -575,7 +708,7 @@ def mutation_seen_cached(img, n, word, cache, world_every=3, max_age=30.0):
 
 MUTATIONS = ("dracula", "demonic", "sinister", "blood", "nightmare", "electric", "zombie", "ghost",
              "angelic", "complexity", "diamond", "frozen", "gold", "honey", "lava", "lunar", "mars",
-             "party", "slime", "solar", "toxic", "void")
+             "party", "slime", "solar", "toxic", "void", "water")
 HALLOWS_GIVES = ("dracula", "demonic", "sinister", "blood", "nightmare", "electric", "zombie", "ghost")
 TIMER_BOX = (760, 128, 1160, 172)
 
@@ -611,14 +744,30 @@ def _mutation_in(text):
     return name if best >= 0.8 else ""
 
 
+UNKNOWN, UNKNOWN_RED = "mutated", "red mutation"
+
+
 def slot_mutation(img, n):
-    if not builtin.ocr_ready():
+    """'' when slot n has no mutation tag, else the mutation's name, or UNKNOWN / UNKNOWN_RED when the tag is
+    there but its word can't be read."""
+    info = slot_label(img, n)
+    if info is None or not info["present"]:
         return ""
-    for t in _label_texts(img, n):
+    if not builtin.ocr_ready():
+        return UNKNOWN_RED if info["red"] else UNKNOWN
+    s = hud_scale(img)
+    seen = {}
+    for t in list(_keyed_texts(img, info["box"], s)) + list(_label_texts(img, n)):
         name = _mutation_in(t)
+        if name == "dracula" and not info["red"]:
+            continue  # Dracula's tag is red; anything else that reads like it is a misread
         if name:
-            return name
-    return ""
+            seen[name] = seen.get(name, 0) + 1
+            if seen[name] >= 2 or name == "dracula":
+                return name
+    if seen:
+        return max(seen, key=seen.get)
+    return UNKNOWN_RED if info["red"] else UNKNOWN
 
 
 def slot_mutation_cached(img, n, cache, max_age=30.0):
@@ -633,10 +782,12 @@ def slot_mutation_cached(img, n, cache, max_age=30.0):
     return name
 
 
-def event_seconds_left(img):
+def event_seconds_left(img, dy=None):
     if not builtin.ocr_ready():
         return None
-    sub = _crop(img, _top_centre(img, TIMER_BOX))
+    if dy is None:
+        dy = banner_dy(img)
+    sub = _crop(img, _top_centre(img, TIMER_BOX, dy))
     if sub is None:
         return None
     s = hud_scale(img)

@@ -85,6 +85,7 @@ class AccState:
     next_popup_check: float = 0
     next_other_popup: float = 0
     next_rare: float = 0
+    unread_since: float = 0.0
     rare_hits: list = field(default_factory=list)
     rare_pending: object = None
     rare_reads: list = field(default_factory=list)
@@ -756,32 +757,42 @@ class Engine:
                     return []
             if held_now != cur:
                 if st.hold_fail.get(cur, 0) >= 1:
-                    if held_now is None:
-                        st.done = True
-                        self.log("Can't read the hotbar in this window (too small, or hidden by the fishing bar), "
-                                 "so nothing more is pressed this event.", acc, "warn")
+                    if held_now is not None:
+                        self.log(f"Slot {cur} won't stay held (is it empty?). Skipping it.", acc, "warn")
+                        st.ev_log.append((cur, "couldn't hold"))
+                        st.cur_slot = 0
                         return []
-                    self.log(f"Slot {cur} won't stay held (is it empty?). Skipping it.", acc, "warn")
-                    st.ev_log.append((cur, "couldn't hold"))
-                    st.cur_slot = 0
-                    return []
-                return self._press_for(acc, st, cur, True)
+                    # The highlight can't be seen (small window, or the fishing bar is over the hotbar). Nothing is
+                    # pressed blind; the slot's mutation tag is still watched, and pressing resumes once the
+                    # hotbar is readable again.
+                    if not st.unread_since:
+                        st.unread_since = time.time()
+                        self.log(f"Can't see which slot is held right now, so slot {cur} isn't pressed again. "
+                                 "Still watching it for a mutation.", acc, "warn")
+                    elif time.time() - st.unread_since > 120:
+                        st.done = True
+                        self.log("The hotbar has been unreadable for 2 minutes (window too small, or covered), so "
+                                 "nothing more is pressed this event.", acc, "warn")
+                        return []
+                else:
+                    return self._press_for(acc, st, cur, True)
+            else:
+                st.unread_since = 0.0
             st.intent_count = 0
             st.stuck_n = 0
             if time.time() >= st.next_mut_check:
                 st.next_mut_check = time.time() + 4
                 name = hallows.slot_mutation_cached(img, cur, st.hcache)
-                if not name and word in hallows.MUTATIONS:
-                    seen = hallows.mutation_seen_cached(img, cur, word, st.hcache)
-                    name = word if seen else ""
                 if not name:
                     st.clean_reads += 1
-                if name and name == st.mut_name:
+                if name:
+                    # Two reads in a row that show a tag; keep the best name either read gave
                     st.mut_votes += 1
+                    st.mut_name = _better_name(st.mut_name, name, word)
                 else:
-                    st.mut_name, st.mut_votes = name, 1 if name else 0
+                    st.mut_name, st.mut_votes = "", 0
                 if name and st.mut_votes >= 2:
-                    return self._mutated(acc, st, s, cur, name, word)
+                    return self._mutated(acc, st, s, cur, st.mut_name, word)
             return []
 
         return self._stray_check(acc, st, s, img, held_now)
@@ -856,10 +867,11 @@ class Engine:
                 continue
             name = hallows.slot_mutation(img, slot)
             if name:
-                self.log(f"Slot {slot} already has {name.title()}, skipping it.", acc)
+                self.log(f"Slot {slot} already has {_mut_text(name)}, skipping it.", acc)
                 continue
             st.cur_slot, st.mut_name, st.mut_votes, st.clean_reads = slot, "", 0, 0
-            st.hcache = {k: v for k, v in st.hcache.items() if k == "banner"}
+            st.unread_since = 0.0
+            st.hcache = {k: v for k, v in st.hcache.items() if k in ("banner", "banner_dy")}
             return slot
         st.done = True
         st.cur_slot = 0
@@ -870,11 +882,11 @@ class Engine:
     def _mutated(self, acc, st, s, cur, name, word):
         st.mut_name, st.mut_votes = "", 0
         if st.clean_reads == 0:
-            self.log(f"Slot {cur} already had {name.title()} (it couldn't be read before it was picked). "
+            self.log(f"Slot {cur} already had {_mut_text(name)} (it couldn't be read before it was picked). "
                      "Skipping it.", acc)
             st.cur_slot = 0
             return []
-        st.ev_log.append((cur, name.title()))
+        st.ev_log.append((cur, _mut_text(name, short=True)))
         if name == word:
             d = self.hstats.hit(acc.user_id, time.strftime("%Y-%m-%d %H:%M"))
             self.log(f"Slot {cur} got {word.title()}! ({d['hits']} so far.) The counter is back to 0.", acc)
@@ -884,10 +896,16 @@ class Engine:
                 st.done = True
                 return []
         else:
-            self.log(f"Slot {cur} became {name.title()} instead of {word.title()}. Moving on.", acc)
-            if name not in hallows.HALLOWS_GIVES:
+            if name == hallows.UNKNOWN_RED:
+                self.log(f"Slot {cur} got a red mutation tag that couldn't be read (it could be {word.title()}, "
+                         "Demonic or Blood; check it yourself). Moving on.", acc, "warn")
+            elif name == hallows.UNKNOWN:
+                self.log(f"Slot {cur} got a mutation (couldn't read which one). Moving on.", acc)
+            else:
+                self.log(f"Slot {cur} became {name.title()} instead of {word.title()}. Moving on.", acc)
+            if name not in hallows.HALLOWS_GIVES and name not in (hallows.UNKNOWN, hallows.UNKNOWN_RED):
                 st.offlist += 1
-                if st.offlist >= 2:
+                if st.offlist >= 3:
                     st.ending = True
                     self.hstats.undo_event(acc.user_id)
                     self.log(f"Failsafe: {st.offlist} characters got mutations Hallow's Eve never gives "
@@ -937,7 +955,7 @@ class Engine:
             return self._press_for(acc, st, st.cur_slot, False)
         if now < st.next_timer:
             return []
-        left = hallows.event_seconds_left(img)
+        left = hallows.event_seconds_left(img, hallows.banner_dy(img, st.hcache))
         if left is None:
             st.next_timer = now + 10
             return []
@@ -1317,13 +1335,14 @@ def _buy_everything(ctx, shop="selene"):
                 if not builtin.still_there(now_img, kind, x, y, sc):
                     missed = True
                     continue
-                status, left = builtin.stock_status(now_img, x, y, sc)
+                strict = item in items.FERTILIZERS
+                status, left = builtin.stock_status(now_img, x, y, sc, strict)
                 if status == "out":
                     skipped += 1
                     handled.append((kind, x, list_y))
                     continue
                 try:
-                    total += _buy_item(ctx, kind, x, y, clickx, sc, left)
+                    total += _buy_item(ctx, kind, x, y, clickx, sc, left, strict)
                 except PurchasePromptOpen:
                     robux_hits += 1
                     if not ctx.dismiss_purchase():
@@ -1387,7 +1406,7 @@ def _shop_items(ctx, img, buttons, shop, first_view):
 CLICK_CAP = 10
 
 
-def _buy_item(ctx, kind, x, y, clickx, sc, left):
+def _buy_item(ctx, kind, x, y, clickx, sc, left, strict=False):
     if left is not None:
         bought = 0
         for _round in range(2):
@@ -1405,19 +1424,20 @@ def _buy_item(ctx, kind, x, y, clickx, sc, left):
             img = ctx.shot()
             if not builtin.still_there(img, kind, x, y, sc):
                 return bought
-            status, left = builtin.stock_status(img, x, y, sc)
+            status, left = builtin.stock_status(img, x, y, sc, strict)
             if status == "out" or not left:
                 return bought
         return bought
+    # Stock couldn't be read. Fertilizers get only a few careful clicks, since their card has no stock count.
     bought = 0
-    for _ in range(CLICK_CAP):
+    for _ in range(3 if strict else CLICK_CAP):
         ctx.click(clickx, y)
         bought += 1
-        ctx.wait(0.25)
+        ctx.wait(0.5 if strict else 0.25)
         chk = ctx.shot()
         if not builtin.still_there(chk, kind, x, y, sc):
             break
-        if builtin.stock_status(chk, x, y, sc)[0] == "out":
+        if builtin.stock_status(chk, x, y, sc, strict)[0] == "out":
             break
     return bought
 
@@ -1635,6 +1655,21 @@ def game_frame(s):
     except (TypeError, ValueError):
         fps = 60.0
     return 1.0 / min(240.0, max(1.0, fps))
+
+
+def _better_name(old, new, word):
+    rank = lambda n: 3 if n == word else 0 if not n else 1 if n in (hallows.UNKNOWN, hallows.UNKNOWN_RED) else 2
+    if rank(new) > rank(old) or (rank(new) == rank(old) == 1 and new == hallows.UNKNOWN_RED):
+        return new
+    return old
+
+
+def _mut_text(name, short=False):
+    if name == hallows.UNKNOWN_RED:
+        return "a red mutation" if short else "a red mutation tag"
+    if name == hallows.UNKNOWN:
+        return "a mutation" if short else "a mutation tag"
+    return name.title()
 
 
 def key_hold(s):

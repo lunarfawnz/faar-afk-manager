@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.4.2
+
+- Hallow's Eve now looks at the hotbar before holding anything. A character that already has a mutation tag is skipped without being pressed, so it no longer holds an already-mutated character and then reports it as a new mutation.
+- Mutation tags are now spotted by their shape instead of only by reading the text, which works in small windows and on any background (water, floor, plot). The name is still read when possible.
+- Dracula is only counted when the tag is red, so another mutation can't be miscounted as Dracula. A red tag that can't be read is logged as "could be Dracula" instead of being guessed.
+- When the game draws the event banner lower than usual (under the Shops / Plot / Fishing buttons), the event name and timer are now still found.
+- If the held slot can't be seen for a moment (small window, or the fishing bar over the hotbar), the app keeps watching the character for a mutation instead of giving up for the whole event. It only stops after 2 minutes of an unreadable hotbar, and it still never presses blind.
+- The "different event" safety stop now needs 3 unexpected mutations instead of 2, so one misread can't end Hallow's Eve early.
+- Fertilizers in Selene's shop are no longer mistaken for being in stock. Their "x1.25 Food" / "x2 Food" lines sit where other items show their stock count; now only "OUT OF STOCK" or a real "x Left" count is believed for them, and if neither can be read it makes at most 3 careful clicks.
+
 ## v1.4.1
 
 - Selene now sells Big Fertilizer and Huge Fertilizer under her potions. Both are recognised and can be switched on or off in Settings → Selene items (on by default).
