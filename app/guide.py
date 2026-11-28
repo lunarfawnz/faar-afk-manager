@@ -87,11 +87,11 @@ GUIDE = [
         "by pressing Claim).",
     ]),
     ("Rare catches", [
-        "When a God, Omniscient or Apex catch cutscene plays on any account, the log says so and your phone gets "
+        "When a Transcendent, God, Omniscient or Apex catch cutscene plays on any account, the log says so and your phone gets "
         "a notification with the character's name (read from the 'You have caught' message). Each tier can be "
         "switched off under 📱 Phone remote → Notify me about.",
-        "It's spotted by watching the screen, so a cutscene can be missed if that account is busy in a shop "
-        "at that moment.",
+        "Every window is watched for cutscenes about once a second while automation is running. Minimized "
+        "windows can't be watched, and the name is read best in bigger windows.",
     ]),
     ("Saving CPU and RAM", [
         "Low graphics and lower priority for alts are on the Settings page.",
@@ -103,7 +103,7 @@ GUIDE = [
     ]),
     ("Phone remote", [
         "Control everything from your phone and get notifications (Dracula, pop-ups that need you, "
-        "disconnects, automation stopped, and God, Omniscient or Apex catches, each with its own switch). Open 📱 Phone remote and follow its 4 steps: install Tailscale on "
+        "disconnects, automation stopped, and Transcendent, God, Omniscient or Apex catches, each with its own switch). Open 📱 Phone remote and follow its 4 steps: install Tailscale on "
         "the PC and phone, set a PIN, turn it on, then open the link on your phone and add it to your home "
         "screen.",
         "It only works inside your own Tailscale network and needs your PIN. Your Roblox logins never leave "

@@ -9,9 +9,12 @@ from . import builtin
 #   omniscient: "IT KNOWS / NEVER SIN AGAIN", a red figure on dark red, then a white island under a red sky
 #   apex:       a deep-blue starfield ("APEX", depth counter, kanji), then a pale-blue island
 #   god:        "ARE YOU A GOD?", a pink figure on dark purple
-TIERS = {"omniscient": "Omniscient", "apex": "Apex", "god": "God"}
-VOTES = 2
-VOTE_WINDOW = 12.0
+#   transcendent: about a minute of near-black screens with a faint dark-red glow (hell names, kanji,
+#                 white shapes, a red seal, "TRANSCENDENT"), then a pale island under a dark red sky
+TIERS = {"omniscient": "Omniscient", "apex": "Apex", "god": "God", "transcendent": "Transcendent"}
+VOTES = {"transcendent": 4}  # it has short red flashes that look like Omniscient, so it needs a longer look
+VOTES_DEFAULT = 2
+VOTE_WINDOW = 15.0
 NAME_WAIT = 100.0
 READ_FOR = 5.0  # keep reading this long after the name first shows up
 COOLDOWN = 40.0
@@ -51,6 +54,8 @@ def cutscene(img):
         return None
     if st["navy"] >= 0.5:
         kind = "apex"
+    elif st["dark"] >= 0.6 and st["dred"] >= 0.15 and st["red"] < 0.12:
+        kind = "transcendent"
     elif st["dred"] >= 0.3 and st["red"] >= 0.1 and st["mag"] < 0.03:
         kind = "omniscient"
     elif st["red"] >= 0.18 and st["white"] >= 0.2 and st["mag"] < 0.03:
@@ -128,6 +133,14 @@ def caught_text(img):
     return (named or got or [None])[0]
 
 
+def tier_of(read):
+    """Which rare tier the notice's [Tier] text names, or None."""
+    for kind in TIERS:
+        if tier_matches(read, kind):
+            return kind
+    return None
+
+
 def tier_matches(read, kind):
     want = TIERS[kind].lower()
     got = re.sub(r"[^a-z]", "", read.lower())
@@ -154,22 +167,3 @@ def best_name(reads):
     if len(final) > 3 and final[-1] in BANG and final[:-1] in names:
         final = final[:-1]
     return final
-    h, w = img.shape[:2]
-    sub = img[int(h * .60):int(h * .80), int(w * .38):int(w * .68)]
-    if sub.size == 0:
-        return None
-    f = max(1.5, 2.0 * 1080.0 / max(1, h))
-    big = cv2.resize(sub, None, fx=f, fy=f, interpolation=cv2.INTER_CUBIC)
-    hsv = cv2.cvtColor(big, cv2.COLOR_BGR2HSV)
-    tess = builtin._OCR["mod"]
-    for var in (np.where((hsv[..., 1] > 90) & (hsv[..., 2] > 150), 0, 255).astype(np.uint8),
-                255 - cv2.cvtColor(big, cv2.COLOR_BGR2GRAY)):
-        try:
-            txt = tess.image_to_string(var, config="--psm 6")
-        except Exception:
-            continue
-        flat = " ".join(t.strip() for t in txt.splitlines() if t.strip())
-        m = CAUGHT_RE.search(flat)
-        if m:
-            return m.group(1).strip().title(), clean_name(m.group(2))
-    return None

@@ -207,11 +207,6 @@ def _blue(px):
     return (hsv[..., 0] >= 92) & (hsv[..., 0] <= 112) & (hsv[..., 1] >= 150) & (hsv[..., 2] >= 170)
 
 
-def _pure(px):
-    b, g, r = px[..., 0].astype(int), px[..., 1].astype(int), px[..., 2].astype(int)
-    return (b >= 248) & (r <= 25) & (g >= 120) & (g <= 205)
-
-
 def slot_frame(img, n):
     s = hud_scale(img)
     pad = max(3, int(round(6 * s)))
@@ -605,52 +600,6 @@ def slot_label_has(img, n, word):
     return any(fuzzy_in(t, word) for t in _label_texts(img, n))
 
 
-def world_label_has(img, word):
-    if not builtin.ocr_ready():
-        return False
-    box = _centre(img, MUTATION_BOX)
-    sub = _crop(img, box)
-    if sub is None:
-        return False
-    s = hud_scale(img)
-    f = 2.0 / max(s, 0.25)
-    pil = _pil(sub)
-    big = pil.resize((max(1, int(pil.width * f)), max(1, int(pil.height * f))), Image.LANCZOS)
-    gray = big.convert("L")
-    arr = np.array(big).astype(int)
-    mx, mn = arr.max(axis=2), arr.min(axis=2)
-    variants = [gray, ImageOps.invert(gray),
-                Image.fromarray(np.where(mx > 150, 0, 255).astype("uint8")),
-                Image.fromarray(np.where((mx - mn) > 90, 0, 255).astype("uint8"))]
-    tess = builtin._OCR["mod"]
-    toks = []
-    for v in variants:
-        try:
-            d = tess.image_to_data(v, config="--psm 11", lang=builtin.ocr_lang(),
-                                   output_type=tess.Output.DICT)
-        except Exception:
-            continue
-        for i, txt in enumerate(d["text"]):
-            if txt.strip() and float(d["conf"][i]) >= 0:
-                toks.append((txt.strip(), d["left"][i] / f, d["top"][i] / f, d["width"][i] / f, d["height"][i] / f))
-    clean = lambda t: re.sub(r"[^a-z0-9]", "", t.lower())
-    feed = [t for t in toks if difflib.SequenceMatcher(None, clean(t[0]), "caught").ratio() >= 0.8
-            or clean(t[0]) == "got"]
-    for t in toks:
-        c = clean(t[0])
-        if len(c) >= 4 and difflib.SequenceMatcher(None, c, word).ratio() >= 0.78:
-            in_feed = any(abs((fd[2] + fd[4] / 2) - (t[2] + t[4] / 2)) < 14 * s and 0 < t[1] - fd[1] < 450 * s
-                          for fd in feed)
-            if not in_feed:
-                return True
-    return False
-
-
-def mutation_seen(img, n, word="dracula"):
-    word = word.lower()
-    return slot_label_has(img, n, word) or world_label_has(img, word)
-
-
 def _thumb(img, box):
     sub = _crop(img, box)
     if sub is None:
@@ -676,34 +625,6 @@ def event_cached(img, cache, max_age=30.0):
 def hallows_event_cached(img, cache, max_age=30.0):
     name, why = event_cached(img, cache, max_age)
     return name == "hallows", why
-
-
-def mutation_seen_cached(img, n, word, cache, world_every=3, max_age=30.0):
-    word = word.lower()
-    now = time.time()
-    l, t, _, _ = slot_box(img, n)
-    sc = hud_scale(img)
-    lab_th = _thumb(img, (l - 8 * sc, t - 22 * sc, l + 89 * sc, t))
-    old = cache.get(("label", n))
-    if old and _same(old[0], lab_th) and now - old[2] < max_age:
-        on_label = old[1]
-    else:
-        on_label = slot_label_has(img, n, word)
-        cache[("label", n)] = (lab_th, on_label, now)
-    if on_label:
-        return True
-    cache["mut_n"] = cache.get("mut_n", 0) + 1
-    if cache["mut_n"] % world_every and not cache.get("world_hit"):
-        return None
-    w_th = _thumb(img, _centre(img, MUTATION_BOX))
-    old = cache.get("world")
-    if old and _same(old[0], w_th) and now - old[2] < max_age:
-        hit = old[1]
-    else:
-        hit = world_label_has(img, word)
-        cache["world"] = (w_th, hit, now)
-    cache["world_hit"] = hit
-    return hit
 
 
 MUTATIONS = ("dracula", "demonic", "sinister", "blood", "nightmare", "electric", "zombie", "ghost",
@@ -773,7 +694,7 @@ def slot_mutation(img, n):
 def slot_mutation_cached(img, n, cache, max_age=30.0):
     l, t, _, _ = slot_box(img, n)
     sc = hud_scale(img)
-    th = _thumb(img, (l - 8 * sc, t - 22 * sc, l + 89 * sc, t))
+    th = _thumb(img, (l - 10 * sc, t - 26 * sc, l + 91 * sc, t + 1 * sc))  # same area slot_label looks at
     old = cache.get(("mut", n))
     if old and _same(old[0], th) and time.time() - old[2] < max_age:
         return old[1]

@@ -240,13 +240,20 @@ def _fertilizers(img, buttons, out):
     rows = {}
     for i in idxs:
         rows.setdefault(round(out[i][1][3] / max(8, 40 * buttons[i][4])), []).append(i)
-    for row in rows.values():
+    for key, row in rows.items():
         row.sort(key=lambda i: out[i][1][0])
+        # Other cards (potions) in the same row: Big Fertilizer comes right after the potions, and Huge Fertilizer
+        # starts the next row on its own. In the older layout both fertilizers share a row, Big on the left.
+        others = [i for i, (name, rect, f) in enumerate(out) if i not in row and rect is not None
+                  and round(rect[3] / max(8, 40 * buttons[i][4])) == key]
         for rank, i in enumerate(row):
             _, rect, f = out[i]
             name = fertilizer_title(img, rect, buttons[i][4])
-            if name is None and len(row) == 2:
-                name = FERTILIZERS[rank]
+            if name is None:
+                if len(row) == 2:
+                    name = FERTILIZERS[rank]
+                elif len(row) == 1:
+                    name = "bigfert" if others else "hugefert"
             out[i] = (name or "unknown", rect, f)
 
 

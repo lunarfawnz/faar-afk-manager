@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.4.3
+
+- New: Transcendent catch notifications. The app spots the Transcendent cutscene and reads the character's name like the other rare catches, with its own switch under Phone remote → Notify me about (on by default).
+- The tier in a rare catch notification now comes from the "You have caught [Tier]" message when it can be read, so a cutscene that looks like another tier for a moment is still reported correctly.
+- Selene's fertilizers are now told apart by where they sit in the shop when their names can't be read, so a fertilizer is no longer skipped as "unknown" in the newer shop layout.
+- If an in-app update ever fails, the error message now shows properly instead of causing a second error.
+- Small clean-ups and speed tweaks.
+
 ## v1.4.2
 
 - Hallow's Eve now looks at the hotbar before holding anything. A character that already has a mutation tag is skipped without being pressed, so it no longer holds an already-mutated character and then reports it as a new mutation.

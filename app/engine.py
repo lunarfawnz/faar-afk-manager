@@ -91,6 +91,8 @@ class AccState:
     rare_reads: list = field(default_factory=list)
     rare_cool: float = 0
     rare_first: float = 0.0
+    rare_tiers: list = field(default_factory=list)
+    rare_upgrade: int = 0
     next_sacpop_check: float = 0
     next_hold_check: float = 0
     next_disc_check: float = 0
@@ -718,30 +720,43 @@ class Engine:
         if st.rare_pending:
             kind, t0 = st.rare_pending
             for tier, name in rare.caught_texts(img):
-                if name and rare.tier_matches(tier, kind):
+                got = rare.tier_of(tier)
+                if name and got:
                     st.rare_reads.append(name)
+                    st.rare_tiers.append(got)
                     st.rare_first = st.rare_first or now
             if st.rare_reads:
                 st.next_rare = now + 0.4  # the name is on screen: read it a few more times while it's there
+            elif kind != "transcendent" and rare.cutscene(img) == "transcendent":
+                st.rare_upgrade += 1
+                if st.rare_upgrade >= rare.VOTES["transcendent"]:
+                    st.rare_pending = ("transcendent", t0)
+                    self.log("It's a Transcendent cutscene, not " + rare.TIERS[kind] + ".", acc)
             if (st.rare_first and now - st.rare_first >= rare.READ_FOR and len(st.rare_reads) >= 3) \
                     or now - t0 > rare.NAME_WAIT:
-                self._rare_done(acc, st, s, kind)
+                self._rare_done(acc, st, s, st.rare_pending[0])
             return
         if now < st.rare_cool:
             return
         kind = rare.cutscene(img)
         if not kind:
             return
-        st.rare_hits = [(t, k) for t, k in st.rare_hits if now - t < rare.VOTE_WINDOW and k == kind] + [(now, kind)]
-        if len(st.rare_hits) >= rare.VOTES:
-            st.rare_hits, st.rare_reads = [], []
+        st.rare_hits = [(t, k) for t, k in st.rare_hits if now - t < rare.VOTE_WINDOW] + [(now, kind)]
+        need = rare.VOTES.get(kind, rare.VOTES_DEFAULT)
+        if sum(1 for _, k in st.rare_hits if k == kind) >= need:
+            st.rare_hits, st.rare_reads, st.rare_tiers, st.rare_upgrade = [], [], [], 0
             st.rare_pending = (kind, now)
             self.log(f"{rare.TIERS[kind]} catch cutscene is playing!", acc)
 
     def _rare_done(self, acc, st, s, kind):
+        if st.rare_tiers:  # the "You have caught [Tier]" message has the final word on the tier
+            read = max(set(st.rare_tiers), key=st.rare_tiers.count)
+            if read != kind:
+                self.log(f"The catch message says {rare.TIERS[read]}, so it's counted as that.", acc)
+                kind = read
         tier = rare.TIERS[kind]
         name = rare.best_name(st.rare_reads)
-        st.rare_pending, st.rare_reads, st.rare_first = None, [], 0.0
+        st.rare_pending, st.rare_reads, st.rare_first, st.rare_tiers = None, [], 0.0, []
         st.rare_cool = time.time() + rare.COOLDOWN
         at = time.strftime("%I:%M %p").lstrip("0")
         body = (f"Caught {name} ({tier}) at {at}!" if name else

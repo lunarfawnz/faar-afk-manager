@@ -200,8 +200,9 @@ class App(ctk.CTk):
                 result = update.update_source()
                 self.ui(lambda: self._update_done_source(result))
         except Exception as e:
-            self.log(f"Update failed: {e}", level="error")
-            self.ui(lambda: (messagebox.showerror("Update failed", str(e)),
+            why = str(e)
+            self.log(f"Update failed: {why}", level="error")
+            self.ui(lambda: (messagebox.showerror("Update failed", why),
                              self.update_btn.configure(text="\u2b06  Try update again", state="normal")))
 
     def _update_done_exe(self):
