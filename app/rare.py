@@ -13,7 +13,7 @@ TIERS = {"omniscient": "Omniscient", "apex": "Apex", "god": "God"}
 VOTES = 2
 VOTE_WINDOW = 12.0
 NAME_WAIT = 100.0
-COOLDOWN = 120.0
+COOLDOWN = 40.0
 
 
 def _stats(img):

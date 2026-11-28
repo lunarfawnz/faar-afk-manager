@@ -164,6 +164,7 @@ class Engine:
             self.selene_queue, self.selene_busy = [], None
             self._thread = threading.Thread(target=self._loop, daemon=True)
             self._thread.start()
+            threading.Thread(target=self._rare_loop, args=(self._thread,), daemon=True).start()
             self.log("Automation started. F8 = pause/resume, F9 = stop.")
         self.on_status(self.status)
 
@@ -630,10 +631,6 @@ class Engine:
                 if xy:
                     return [("popup", "daily", xy)]
 
-        if now >= st.next_rare and any(s.get(f"notify_rare_{k}", True) for k in rare.TIERS):
-            st.next_rare = now + (2.0 if st.rare_pending else 1.0)
-            self._rare_check(acc, st, s, shot())
-
         if f.get("rebirth") and "rebirth" not in st.disabled and now >= st.next_rebirth:
             st.next_rebirth = now + max(1, float(s["rebirth_every_min"])) * 60
             jobs.append(("rebirth",))
@@ -691,6 +688,28 @@ class Engine:
             jobs.append(("anti_afk",))
         return jobs
 
+    def _rare_loop(self, main):
+        """Watches every window for rare-catch cutscenes on its own thread, about once a second, so a shop visit,
+        a rejoin or a slow check on another account can't make it miss one. It only looks; it never clicks."""
+        while main.is_alive() and not self._stop.is_set():
+            t0 = time.time()
+            try:
+                s = self.get_settings()
+                if not self._paused.is_set() and any(s.get(f"notify_rare_{k}", True) for k in rare.TIERS):
+                    for acc in list(self.get_accounts()):
+                        if self._stop.is_set():
+                            break
+                        if not acc.hwnd or not win.is_window(acc.hwnd):
+                            continue
+                        st = self.states.get(acc.user_id)
+                        if st is None or time.time() < st.next_rare:
+                            continue
+                        st.next_rare = time.time() + (2.0 if st.rare_pending else 0.8)
+                        self._rare_check(acc, st, s, win.capture_window(acc.hwnd))
+            except Exception:
+                pass
+            time.sleep(max(0.2, 0.8 - (time.time() - t0)))
+
     def _rare_check(self, acc, st, s, img):
         if img is None:
             return
@@ -720,8 +739,10 @@ class Engine:
         name = max(names, key=lambda n: (sum(n in o for o in names), -len(n))) if names else ""
         st.rare_pending, st.rare_reads = None, []
         st.rare_cool = time.time() + rare.COOLDOWN
-        body = f"Caught {name} ({tier})!" if name else f"An {tier} catch cutscene played." if tier[0] in "AEIOU" \
-            else f"A {tier} catch cutscene played."
+        at = time.strftime("%I:%M %p").lstrip("0")
+        body = (f"Caught {name} ({tier}) at {at}!" if name else
+                f"An {tier} catch cutscene played at {at}." if tier[0] in "AEIOU" else
+                f"A {tier} catch cutscene played at {at}.")
         self.log(f"Rare catch: {name} ({tier})." if name else f"Rare catch: {tier} (couldn't read the name).", acc)
         self.notify(f"rare_{kind}", f"{tier} catch!", body, acc)
 
